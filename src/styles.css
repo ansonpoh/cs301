@@ -198,6 +198,8 @@ button.danger-solid,
   display: flex;
   flex-direction: column;
   padding: 34px 18px 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .brand {
   display: flex;
@@ -2264,7 +2266,7 @@ dialog::backdrop {
   }
   .field input,
   .field select {
-    font-size: 14px;
+    font-size: 16px;
     padding: 10px;
   }
   .login-layout {
@@ -2335,6 +2337,133 @@ dialog::backdrop {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .breadcrumb .crumb {
+    display: none;
+  }
+
+  /* Prevent iOS Safari from zooming in on focus (it zooms below 16px). */
+  .search input,
+  .filters select,
+  .date-filter input {
+    font-size: 16px;
+  }
+  .filters select {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+  .date-filter {
+    flex: 1 1 100%;
+  }
+  .date-filter input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Tables become stacked cards: one card per row, labelled fields in a 2-column grid. */
+  .table-scroll {
+    overflow: visible;
+  }
+  .stack-table,
+  .stack-table tbody {
+    display: block;
+    white-space: normal;
+  }
+  .stack-table thead {
+    display: none;
+  }
+  .stack-table tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 16px;
+    padding: 16px;
+    border-bottom: 1px solid #f0f3f2;
+  }
+  .stack-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .stack-table td,
+  .stack-table tbody tr:last-child td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .stack-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 12px;
+    color: #687579;
+  }
+  .stack-table .cell-primary,
+  .stack-table .cell-wide {
+    grid-column: 1 / -1;
+  }
+  .stack-table .cell-primary {
+    order: -1;
+    padding-right: 72px;
+  }
+  .stack-table .cell-end {
+    position: absolute;
+    top: 16px;
+    right: 12px;
+  }
+  .stack-table .icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+  .audit-details {
+    max-width: none;
+  }
+  .audit-table .cell-end {
+    right: 16px;
+  }
+}
+.crumb-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+.crumb-link:hover {
+  color: var(--teal);
+  text-decoration: underline;
+}
+@media (max-height: 860px) {
+  .sidebar {
+    padding-top: 22px;
+  }
+  .workspace-label {
+    margin: 30px 17px 10px;
+  }
+  .sidebar nav {
+    gap: 4px;
+  }
+  .sidebar nav button {
+    padding-block: 10px;
+  }
+  .sidebar-bottom {
+    padding-top: 20px;
+  }
+  .environment-card {
+    padding: 12px 14px;
+    margin-bottom: 14px;
+  }
+  .environment-card p {
+    margin: 7px 0 9px;
+    line-height: 1.5;
+  }
+  .sidebar-help {
+    padding-block: 8px 14px;
+  }
+  .sidebar-profile {
+    padding-block: 14px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

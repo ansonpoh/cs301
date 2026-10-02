@@ -54,7 +54,7 @@ export default function Audit({ events, users }: { events: AuditEvent[]; users: 
         </div>
         {rows.length ? (
           <div className="table-scroll">
-            <table>
+            <table className="stack-table audit-table">
               <thead>
                 <tr>
                   <th>DateTime (ISO 8601)</th>
@@ -72,20 +72,28 @@ export default function Audit({ events, users }: { events: AuditEvent[]; users: 
                   const u = users.find((u) => u.id === e.actorId);
                   return (
                     <tr key={e.id}>
-                      <td className="audit-mono">{e.at}</td>
-                      <td>
+                      <td className="audit-mono cell-wide" data-label="DateTime (ISO 8601)">
+                        {e.at}
+                      </td>
+                      <td className="cell-end">
                         <span className={`crud-tag ${cols.crud.toLowerCase()}`}>{cols.crud}</span>
                       </td>
-                      <td className="audit-details">
+                      <td className="audit-details cell-primary">
                         <strong>{e.action}</strong>
                         <small>
                           <Truncated text={e.detail ?? e.entityId} />
                         </small>
                       </td>
-                      <td className="audit-mono">{cols.attribute}</td>
-                      <td className="audit-mono">{cols.before || '—'}</td>
-                      <td className="audit-mono">{cols.after || '—'}</td>
-                      <td>
+                      <td className="audit-mono cell-wide" data-label="Attribute name">
+                        {cols.attribute}
+                      </td>
+                      <td className="audit-mono" data-label="Before value">
+                        {cols.before || '—'}
+                      </td>
+                      <td className="audit-mono" data-label="After value">
+                        {cols.after || '—'}
+                      </td>
+                      <td data-label="Agent ID">
                         <span className="audit-mono">{e.actorId}</span>
                         {u && (
                           <small>
@@ -93,7 +101,9 @@ export default function Audit({ events, users }: { events: AuditEvent[]; users: 
                           </small>
                         )}
                       </td>
-                      <td className="audit-mono">{e.clientId ?? '—'}</td>
+                      <td className="audit-mono" data-label="Client ID">
+                        {e.clientId ?? '—'}
+                      </td>
                     </tr>
                   );
                 })}

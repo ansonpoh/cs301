@@ -209,8 +209,7 @@ export default function Overview({
             <span className="outline-chip">ACTION CENTER</span>
           </div>
           <h2>
-            A little attention.
-            <br />A stronger relationship.
+            A little attention. <br />A stronger relationship.
           </h2>
           <p>
             {pending.length} client {pending.length === 1 ? 'profile needs' : 'profiles need'} an
@@ -249,7 +248,7 @@ export default function Overview({
           />
           {clients.length ? (
             <div className="table-scroll">
-              <table>
+              <table className="stack-table">
                 <thead>
                   <tr>
                     <th>Client</th>
@@ -267,7 +266,7 @@ export default function Overview({
                         if (!(e.target as HTMLElement).closest('button')) onClient(c.id);
                       }}
                     >
-                      <td>
+                      <td className="cell-primary">
                         <button className="client-link" onClick={() => onClient(c.id)}>
                           <Avatar name={`${c.firstName} ${c.lastName}`} />
                           <span>
@@ -278,11 +277,13 @@ export default function Overview({
                           </span>
                         </button>
                       </td>
-                      <td>
+                      <td data-label="Status">
                         <Badge>{c.verification}</Badge>
                       </td>
-                      <td>{accounts.filter((a) => a.clientId === c.id).length}</td>
-                      <td>
+                      <td data-label="Accounts">
+                        {accounts.filter((a) => a.clientId === c.id).length}
+                      </td>
+                      <td className="cell-end">
                         <button
                           className="icon-button"
                           aria-label={`Open ${c.firstName}`}

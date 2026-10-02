@@ -94,7 +94,7 @@ export function ClientList({
         </div>
         {rows.length ? (
           <div className="table-scroll">
-            <table>
+            <table className="stack-table">
               <thead>
                 <tr>
                   <th>Client</th>
@@ -115,7 +115,7 @@ export function ClientList({
                       if (!(e.target as HTMLElement).closest('button')) onOpen(c.id);
                     }}
                   >
-                    <td>
+                    <td className="cell-primary">
                       <button className="client-link" onClick={() => onOpen(c.id)}>
                         <Avatar name={`${c.firstName} ${c.lastName}`} />
                         <span>
@@ -126,14 +126,14 @@ export function ClientList({
                         </span>
                       </button>
                     </td>
-                    <td>
+                    <td className="cell-wide" data-label="Contact">
                       {c.email}
                       <small>{c.phone}</small>
                     </td>
-                    <td>
+                    <td data-label="Verification">
                       <Badge>{c.verification}</Badge>
                     </td>
-                    <td>
+                    <td data-label={canEdit ? 'Accounts' : 'Relationship agent'}>
                       {canEdit ? (
                         (() => {
                           const n = accounts.filter((a) => a.clientId === c.id).length;
@@ -143,8 +143,8 @@ export function ClientList({
                         <AgentName user={users.find((u) => u.id === c.agentId)} id={c.agentId} />
                       )}
                     </td>
-                    <td>{date(c.createdAt)}</td>
-                    <td>
+                    <td data-label="Client since">{date(c.createdAt)}</td>
+                    <td className="cell-end">
                       <button
                         className="icon-button"
                         aria-label={`View ${c.firstName} ${c.lastName}`}

@@ -23,7 +23,7 @@ export function TransactionTable({ rows, clients }: { rows: Transaction[]; clien
 
   return rows.length ? (
     <div className="table-scroll">
-      <table>
+      <table className="stack-table">
         <thead>
           <tr>
             <th>Transaction</th>
@@ -38,7 +38,7 @@ export function TransactionTable({ rows, clients }: { rows: Transaction[]; clien
             const c = clients.find((c) => c.id === t.clientId);
             return (
               <tr key={t.id}>
-                <td>
+                <td className="cell-primary">
                   <div className="cell-flex">
                     <span className={`transaction-icon ${t.type.toLowerCase()}`}>
                       {t.type === 'Deposit' ? (
@@ -53,15 +53,17 @@ export function TransactionTable({ rows, clients }: { rows: Transaction[]; clien
                     </div>
                   </div>
                 </td>
-                <td>
+                <td className="cell-wide" data-label="Client / account">
                   <strong>{c ? `${c.firstName} ${c.lastName}` : 'Removed client'}</strong>
                   <small>{t.accountId}</small>
                 </td>
-                <td>{datetime(t.date)}</td>
-                <td>
+                <td data-label="Date">{datetime(t.date)}</td>
+                <td data-label="Status">
                   <Badge>{t.status}</Badge>
                 </td>
-                <td className={`align-right amount ${t.type === 'Deposit' ? 'positive' : ''}`}>
+                <td
+                  className={`cell-end align-right amount ${t.type === 'Deposit' ? 'positive' : ''}`}
+                >
                   {t.type === 'Deposit' ? '+' : '−'}
                   {money(t.amount)}
                 </td>

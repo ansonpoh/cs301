@@ -179,7 +179,16 @@ export default function App() {
       />
 
       <div className="main-shell">
-        <Topbar user={user} title={pageTitle} onOpenMenu={() => setMenu(true)} />
+        <Topbar
+          user={user}
+          title={pageTitle}
+          parent={
+            client
+              ? { label: admin ? 'Clients' : 'My clients', onClick: () => setClientId(null) }
+              : undefined
+          }
+          onOpenMenu={() => setMenu(true)}
+        />
 
         <main className="content">
           {error && !dialog && (

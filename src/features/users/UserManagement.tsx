@@ -41,7 +41,7 @@ export default function UserManagement({
           detail={`${users.length} users · ${users.filter((u) => u.active).length} active`}
         />
         <div className="table-scroll">
-          <table>
+          <table className="stack-table">
             <thead>
               <tr>
                 <th>User</th>
@@ -56,7 +56,7 @@ export default function UserManagement({
 
                 return (
                   <tr key={u.id}>
-                    <td>
+                    <td className="cell-primary">
                       <div className="cell-flex">
                         <Avatar name={`${u.firstName} ${u.lastName}`} />
                         <div>
@@ -68,13 +68,13 @@ export default function UserManagement({
                         </div>
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Role">
                       <Badge>{u.role}</Badge>
                     </td>
-                    <td>
+                    <td data-label="Status">
                       <Badge>{u.active ? 'Active' : 'Disabled'}</Badge>
                     </td>
-                    <td>
+                    <td className="cell-wide">
                       <div className="actions">
                         <button
                           className="icon-button"

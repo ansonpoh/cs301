@@ -5,10 +5,12 @@ import { Avatar } from '../components/ui';
 export default function Topbar({
   user,
   title,
+  parent,
   onOpenMenu,
 }: {
   user: User;
   title: string;
+  parent?: { label: string; onClick: () => void };
   onOpenMenu: () => void;
 }) {
   return (
@@ -21,8 +23,16 @@ export default function Topbar({
         >
           <Menu size={20} />
         </button>
-        <span>Workspace</span>
-        <span>/</span>
+        <span className="crumb">Workspace</span>
+        <span className="crumb">/</span>
+        {parent && (
+          <>
+            <button className="crumb crumb-link" onClick={parent.onClick}>
+              {parent.label}
+            </button>
+            <span className="crumb">/</span>
+          </>
+        )}
         <strong>{title}</strong>
       </div>
       <div className="topbar-right">
