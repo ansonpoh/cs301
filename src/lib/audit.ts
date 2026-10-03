@@ -15,6 +15,21 @@ const CRUD_BY_ACTION: Record<string, Crud> = {
   'Client deleted': 'Delete',
   'Account deleted': 'Delete',
   'User deleted': 'Delete',
+  CASE_CREATED: 'Create',
+  CASE_VIEWED: 'Read',
+  STATUS_UPDATED: 'Update',
+  ESCALATED: 'Update',
+  REASSIGNED: 'Update',
+  'Case SLA updated': 'Update',
+  RECO_GENERATED: 'Create',
+  RECO_VIEWED: 'Read',
+  RECO_SIMULATED: 'Read',
+  RECO_OUTCOME: 'Update',
+  RECO_CONSENT: 'Update',
+  RISK_VIEWED: 'Read',
+  RISK_FLAGGED: 'Create',
+  RISK_UPDATED: 'Update',
+  INTERVENTION_LOGGED: 'Create',
 };
 
 // Login and logout are session events rather than CRUD operations on a record.
@@ -35,6 +50,14 @@ export const FIELD_LABELS: Record<string, string> = {
   verification: 'Verification Status',
   role: 'Role',
   active: 'Active',
+  status: 'Case Status',
+  agentId: 'Assigned Agent',
+  escalated: 'Escalated',
+  slaBusinessDays: 'SLA (Business Days)',
+  outcome: 'Recommendation Outcome',
+  recoConsent: 'Recommendation Consent',
+  riskStatus: 'Risk Status',
+  riskLevel: 'Risk Level',
 };
 
 const stars = (n: number) => '*'.repeat(Math.max(3, Math.min(n, 8)));
@@ -61,6 +84,13 @@ export function maskValue(field: string, value: string): string {
       return value;
   }
 }
+
+// Free-text case notes may contain PII, so emails, NRIC/FIN numbers and long digit runs are masked.
+export const filterPii = (text: string) =>
+  text
+    .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, (m) => maskValue('email', m))
+    .replace(/\b[STFGM]\d{7}[A-Z]\b/gi, (m) => `${m[0]}*******${m.slice(-1)}`)
+    .replace(/\+?\d[\d -]{6,}\d/g, (m) => `${m.slice(0, 2)}****${m.slice(-2)}`);
 
 // Appendix 2 layout: Create/Read/Delete store the Client ID; Update stores "Attr A|Attr B".
 export function auditColumns(e: AuditEvent) {

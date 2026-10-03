@@ -4,6 +4,8 @@ import {
   CircleHelp,
   LayoutDashboard,
   LogOut,
+  HeartHandshake,
+  MessageSquareWarning,
   ScrollText,
   UserCog,
   Users,
@@ -18,6 +20,8 @@ export default function Sidebar({
   admin,
   page,
   clientCount,
+  caseCount,
+  riskCount,
   open,
   onNavigate,
   onClose,
@@ -28,6 +32,8 @@ export default function Sidebar({
   admin: boolean;
   page: string;
   clientCount: number;
+  caseCount: number;
+  riskCount: number;
   open: boolean;
   onNavigate: (page: string) => void;
   onClose: () => void;
@@ -38,6 +44,8 @@ export default function Sidebar({
     { label: 'Overview', icon: LayoutDashboard },
     { label: 'Clients', icon: Users },
     { label: 'Transactions', icon: ArrowLeftRight },
+    { label: 'Cases', icon: MessageSquareWarning },
+    { label: 'Retention', icon: HeartHandshake },
     ...(admin
       ? [
           { label: 'User management', icon: UserCog },
@@ -65,6 +73,16 @@ export default function Sidebar({
               <l.icon size={19} />
               {l.label === 'Clients' && !admin ? 'My clients' : l.label}
               {l.label === 'Clients' && <span>{clientCount}</span>}
+              {l.label === 'Cases' && caseCount > 0 && (
+                <span className="nav-alert" title="Escalated cases">
+                  {caseCount}
+                </span>
+              )}
+              {l.label === 'Retention' && riskCount > 0 && (
+                <span className="nav-alert" title="Clients at high attrition risk">
+                  {riskCount}
+                </span>
+              )}
             </button>
           ))}
         </nav>

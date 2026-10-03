@@ -7,7 +7,10 @@ import {
   ShieldCheck,
   ChevronRight,
   Clock3,
+  TriangleAlert,
+  HeartHandshake,
 } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { User, Client, Account, Transaction, AuditEvent } from '../lib/types';
 import { Avatar, Badge, SectionHead, datetime, money, Empty } from '../components/ui';
 
@@ -20,6 +23,11 @@ export default function Overview({
   onNavigate,
   onClient,
   onCreate,
+  escalated,
+  onEscalated,
+  nextBestActions,
+  highRisk,
+  onHighRisk,
 }: {
   user: User;
   clients: Client[];
@@ -29,6 +37,11 @@ export default function Overview({
   onNavigate: (v: string) => void;
   onClient: (id: string) => void;
   onCreate: () => void;
+  escalated: number;
+  onEscalated: () => void;
+  nextBestActions?: ReactNode;
+  highRisk: number;
+  onHighRisk: () => void;
 }) {
   const pending = clients.filter((c) => c.verification !== 'Verified');
   const deposit = accounts.reduce((n, a) => n + a.initialDeposit, 0);
@@ -131,6 +144,38 @@ export default function Overview({
           </button>
         ))}
       </div>
+      {escalated > 0 && (
+        <button className="case-alert" onClick={onEscalated}>
+          <TriangleAlert size={19} />
+          <span>
+            <strong>
+              {escalated} escalated {escalated === 1 ? 'case' : 'cases'}
+            </strong>
+            <small>
+              {user.role === 'Admin'
+                ? 'Past the resolution SLA. Review and reassign.'
+                : 'Assigned to you and past the resolution SLA.'}
+            </small>
+          </span>
+          <ArrowUpRight size={17} />
+        </button>
+      )}
+      {highRisk > 0 && (
+        <button className="case-alert warning" onClick={onHighRisk}>
+          <HeartHandshake size={19} />
+          <span>
+            <strong>
+              {highRisk} {highRisk === 1 ? 'client' : 'clients'} at high attrition risk
+            </strong>
+            <small>
+              {user.role === 'Admin'
+                ? 'Flagged by the daily analysis across all agents.'
+                : 'Contact them and log a retention intervention.'}
+            </small>
+          </span>
+          <ArrowUpRight size={17} />
+        </button>
+      )}
       <div className="overview-grid">
         <section className="panel chart-panel">
           <SectionHead
@@ -238,6 +283,7 @@ export default function Overview({
           </button>
         </section>
       </div>
+      {nextBestActions}
       <div className="overview-bottom">
         <section className="panel">
           <SectionHead

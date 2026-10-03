@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   Plus,
   ArrowUpRight,
@@ -8,8 +8,9 @@ import {
   Trash2,
   CreditCard,
   Users,
+  MessageSquareWarning,
 } from 'lucide-react';
-import type { Client, Account, Transaction, User } from '../../lib/types';
+import type { Case, Client, Account, Transaction, User } from '../../lib/types';
 import {
   Avatar,
   Badge,
@@ -21,6 +22,7 @@ import {
   usePaged,
 } from '../../components/ui';
 import { TransactionTable } from '../transactions/Transactions';
+import { CaseTable } from '../cases/Cases';
 
 export function ClientList({
   clients,
@@ -188,6 +190,17 @@ export function ClientDetail({
   onDelete,
   onAccount,
   onDeleteAccount,
+  cases,
+  caseCount,
+  users,
+  sla,
+  onCasesTab,
+  onRaiseCase,
+  onOpenCase,
+  initialTab = 'Overview',
+  recommendations,
+  onRecoTab,
+  riskFlag,
 }: {
   client: Client;
   agent?: User;
@@ -200,8 +213,21 @@ export function ClientDetail({
   onDelete: () => void;
   onAccount: () => void;
   onDeleteAccount: (id: string) => void;
+  cases: Case[];
+  caseCount: number;
+  users: User[];
+  sla: number;
+  onCasesTab: () => void;
+  onRaiseCase: () => void;
+  onOpenCase: (id: string) => void;
+  initialTab?: string;
+  recommendations?: ReactNode;
+  onRecoTab: () => void;
+  riskFlag?: ReactNode;
 }) {
-  const [tab, setTab] = useState('Overview');
+  const [tab, setTab] = useState(initialTab);
+  const tabs = ['Overview', 'Accounts', 'Transactions', 'Cases'];
+  if (recommendations) tabs.splice(1, 0, 'Recommendations');
 
   return (
     <>
@@ -224,6 +250,13 @@ export function ClientDetail({
         </div>
         <div className="actions">
           <Badge>{c.verification}</Badge>
+          {riskFlag}
+          {canEdit && (
+            <button className="secondary" onClick={onRaiseCase}>
+              <MessageSquareWarning size={15} />
+              Raise complaint/dispute
+            </button>
+          )}
           {canEdit && (
             <button className="secondary" onClick={onEdit}>
               <Pencil size={15} />
@@ -233,10 +266,21 @@ export function ClientDetail({
         </div>
       </div>
       <div className="tabs">
-        {['Overview', 'Accounts', 'Transactions'].map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>
+        {tabs.map((t) => (
+          <button
+            key={t}
+            className={tab === t ? 'active' : ''}
+            onClick={() => {
+              setTab(t);
+              // Loading the client's cases is a search, so it is logged as CASE_VIEWED.
+              if (t === 'Cases' && tab !== 'Cases') onCasesTab();
+              // Opening recommendations checks the cache, regenerates if stale, and logs the view.
+              if (t === 'Recommendations' && tab !== t) onRecoTab();
+            }}
+          >
             {t}
             {t === 'Accounts' && <span>{accounts.length}</span>}
+            {t === 'Cases' && <span>{caseCount}</span>}
           </button>
         ))}
       </div>
@@ -355,6 +399,24 @@ export function ClientDetail({
           ) : (
             <Empty title="No accounts yet" text="Open the first bank account for this client." />
           )}
+        </section>
+      ) : tab === 'Recommendations' ? (
+        recommendations
+      ) : tab === 'Cases' ? (
+        <section className="panel">
+          <SectionHead
+            title="Complaints & disputes"
+            detail="Cases raised on behalf of this client"
+            action={canEdit ? 'Raise case' : undefined}
+            onAction={onRaiseCase}
+          />
+          <CaseTable
+            rows={cases.filter((x) => x.clientId === c.id)}
+            clients={[c]}
+            users={users}
+            sla={sla}
+            onOpen={onOpenCase}
+          />
         </section>
       ) : (
         <section className="panel">

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { DemoService } from './lib/service';
-import type { User, Client } from './lib/types';
+import type { User, Client, CaseFilters, AiMode, RiskFilters } from './lib/types';
+import { NEXT_STATUS, isEscalated } from './lib/cases';
 import { Modal } from './components/ui';
 import HelpGuide from './components/HelpGuide';
 import Toast from './components/Toast';
@@ -18,6 +19,18 @@ import ImportForm from './features/transactions/ImportForm';
 import UserForm from './features/users/UserForm';
 import UserManagement from './features/users/UserManagement';
 import Audit from './features/audit/Audit';
+import { CaseList, CaseDetail } from './features/cases/Cases';
+import CaseForm from './features/cases/CaseForm';
+import { StatusForm, ReassignForm, SlaForm } from './features/cases/CaseActionForms';
+import {
+  NextBestActions,
+  RecommendationsPanel,
+  type NextBestActionsData,
+} from './features/recommendations/Recommendations';
+import { OutcomeForm, RefreshForm, SimulateForm } from './features/recommendations/RecoForms';
+import { RiskBadge, RiskDetail, RiskList } from './features/retention/Retention';
+import { InterventionForm, RiskStatusForm } from './features/retention/RetentionForms';
+import { analyseRisk, isOpenRisk } from './lib/retention';
 
 const service = new DemoService(localStorage);
 
@@ -27,6 +40,15 @@ type Dialog =
   | { kind: 'verify'; clientId: string }
   | { kind: 'import' }
   | { kind: 'user'; user?: User }
+  | { kind: 'case'; clientId?: string }
+  | { kind: 'caseStatus'; caseId: string }
+  | { kind: 'reassign'; caseId: string }
+  | { kind: 'sla' }
+  | { kind: 'recoRefresh'; clientId: string }
+  | { kind: 'simulate'; recoId: string }
+  | { kind: 'outcome'; recoId: string }
+  | { kind: 'intervention'; clientId: string }
+  | { kind: 'riskStatus'; clientId: string }
   | { kind: 'confirm'; title: string; text: string; action: () => Promise<unknown> }
   | { kind: 'help' };
 
@@ -42,6 +64,24 @@ function dialogTitle(dialog: Dialog) {
       return 'Import transactions';
     case 'user':
       return dialog.user ? 'Edit user' : 'Create a team member';
+    case 'case':
+      return 'Raise a complaint or dispute';
+    case 'caseStatus':
+      return 'Update case status';
+    case 'reassign':
+      return 'Reassign escalated case';
+    case 'sla':
+      return 'Case resolution SLA';
+    case 'recoRefresh':
+      return 'Refresh recommendations';
+    case 'simulate':
+      return 'Simulate offer terms';
+    case 'outcome':
+      return 'Record recommendation outcome';
+    case 'intervention':
+      return 'Log retention intervention';
+    case 'riskStatus':
+      return 'Update risk status';
     case 'confirm':
       return dialog.title;
     case 'help':
@@ -60,6 +100,14 @@ export default function App() {
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
   const [menu, setMenu] = useState(false);
+  const [caseId, setCaseId] = useState<string | null>(null);
+  const [caseFilters, setCaseFilters] = useState<CaseFilters>({});
+  const [caseIds, setCaseIds] = useState<string[]>([]);
+  const [clientTab, setClientTab] = useState('Overview');
+  const [nba, setNba] = useState<NextBestActionsData | null>(null);
+  const [riskFilters, setRiskFilters] = useState<RiskFilters>({});
+  const [riskIds, setRiskIds] = useState<string[]>([]);
+  const [riskClientId, setRiskClientId] = useState<string | null>(null);
 
   useEffect(() => {
     if (toast) {
@@ -70,7 +118,42 @@ export default function App() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
-  }, [page, clientId]);
+  }, [page, clientId, caseId, riskClientId]);
+
+  // An agent's dashboard asks for next best actions; stale or missing sets are regenerated first.
+  useEffect(() => {
+    if (user?.role !== 'Agent' || page !== 'Overview') return;
+    setNba(null);
+    service
+      .getNextBestActions()
+      .then((data) => {
+        setNba(data);
+        setDb(service.snapshot());
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : 'Recommendations unavailable.'));
+  }, [user, page]);
+
+  // Stands in for the scheduled jobs (SLA check, daily attrition analysis): on sign-in, then
+  // every minute.
+  useEffect(() => {
+    if (!user) return;
+    const check = async () => {
+      const escalated = await service.runSlaCheck();
+      const flagged = await service.runRiskAnalysis();
+      setDb(service.snapshot());
+      if (escalated && user.role === 'Admin')
+        setToast(
+          `${escalated} ${escalated === 1 ? 'case' : 'cases'} breached the SLA and escalated. Admin email simulated.`,
+        );
+      else if (flagged)
+        setToast(
+          `Attrition analysis flagged ${flagged} ${flagged === 1 ? 'client' : 'clients'}. See Retention.`,
+        );
+    };
+    void check();
+    const id = setInterval(() => void check(), 60_000);
+    return () => clearInterval(id);
+  }, [user]);
 
   const run = async (action: () => Promise<unknown>, message = '', close = true) => {
     if (busy) return;
@@ -96,18 +179,74 @@ export default function App() {
   const confirm = (title: string, text: string, action: () => Promise<unknown>) =>
     open({ kind: 'confirm', title, text, action });
 
-  const navigate = (p: string) => {
+  // Each case list load is a search, recorded once in the audit log by the service.
+  const searchCases = (filters: CaseFilters) =>
+    void run(
+      async () => {
+        const rows = await service.searchCases(filters);
+        setCaseIds(rows.map((c) => c.id));
+        setCaseFilters(filters);
+      },
+      '',
+      false,
+    );
+
+  // Each dashboard load is logged once as RISK_VIEWED, with its filters and result count.
+  const searchRisks = (filters: RiskFilters) =>
+    void run(
+      async () => {
+        const rows = await service.getRetentionRisks(filters);
+        setRiskIds(rows.map((p) => p.clientId));
+        setRiskFilters(filters);
+      },
+      '',
+      false,
+    );
+
+  const navigate = (p: string, filters: CaseFilters | RiskFilters = {}) => {
     setPage(p);
     setClientId(null);
+    setCaseId(null);
+    setRiskClientId(null);
     setMenu(false);
     setError('');
+    if (p === 'Cases') searchCases(filters as CaseFilters);
+    if (p === 'Retention') searchRisks(filters as RiskFilters);
   };
 
-  const openClient = (id: string) => {
+  const openRisk = (id: string) =>
+    void run(
+      async () => {
+        await service.getRetentionRisks({ clientId: id, status: 'All' });
+        setRiskClientId(id);
+        setClientId(null);
+        setCaseId(null);
+        setPage('Retention');
+      },
+      '',
+      false,
+    );
+
+  const openCase = (id: string) =>
+    void run(
+      async () => {
+        await service.searchCases({ caseId: id });
+        setCaseId(id);
+        setClientId(null);
+        setPage('Cases');
+      },
+      '',
+      false,
+    );
+
+  const openClient = (id: string, tab = 'Overview') => {
     void run(
       async () => {
         await service.viewClient(id);
+        if (tab === 'Recommendations') await service.getRecommendations(id);
+        setClientTab(tab);
         setClientId(id);
+        setCaseId(null);
         setPage('Clients');
       },
       '',
@@ -151,12 +290,26 @@ export default function App() {
   const events = db.audit.filter((e) => admin || e.actorId === user.id);
   const imports = db.imports.filter((i) => admin || i.actorId === user.id);
   const client = clients.find((c) => c.id === clientId);
+  const caseRows = caseIds.flatMap((id) => db.cases.filter((c) => c.id === id));
+  const caseRecord = page === 'Cases' ? db.cases.find((c) => c.id === caseId) : undefined;
+  const escalated = db.cases.filter((c) => isEscalated(c) && (admin || c.agentId === user.id));
+  const sla = db.caseSettings.slaBusinessDays;
+  const riskProfiles = db.riskProfiles.filter((p) => ids.has(p.clientId));
+  const riskRows = riskIds.flatMap((id) => riskProfiles.filter((p) => p.clientId === id));
+  const riskRecord =
+    page === 'Retention' ? riskProfiles.find((p) => p.clientId === riskClientId) : undefined;
+  const riskClient = riskRecord && db.clients.find((c) => c.id === riskRecord.clientId);
+  const highRisk = riskProfiles.filter((p) => isOpenRisk(p) && p.level === 'High').length;
 
   const pageTitle = client
     ? `${client.firstName} ${client.lastName}`
-    : page === 'Clients' && !admin
-      ? 'My clients'
-      : page;
+    : caseRecord
+      ? caseRecord.id
+      : riskClient
+        ? `${riskClient.firstName} ${riskClient.lastName}`
+        : page === 'Clients' && !admin
+          ? 'My clients'
+          : page;
 
   return (
     <div className="app-shell">
@@ -165,6 +318,8 @@ export default function App() {
         admin={admin}
         page={page}
         clientCount={clients.length}
+        caseCount={escalated.length}
+        riskCount={highRisk}
         open={menu}
         onNavigate={navigate}
         onClose={() => setMenu(false)}
@@ -185,7 +340,11 @@ export default function App() {
           parent={
             client
               ? { label: admin ? 'Clients' : 'My clients', onClick: () => setClientId(null) }
-              : undefined
+              : caseRecord
+                ? { label: 'Cases', onClick: () => navigate('Cases', caseFilters) }
+                : riskRecord
+                  ? { label: 'Retention', onClick: () => navigate('Retention', riskFilters) }
+                  : undefined
           }
           onOpenMenu={() => setMenu(true)}
         />
@@ -210,13 +369,27 @@ export default function App() {
               onNavigate={navigate}
               onClient={openClient}
               onCreate={() => open({ kind: 'client' })}
+              escalated={escalated.length}
+              onEscalated={() => navigate('Cases', { status: 'Escalated' })}
+              highRisk={highRisk}
+              onHighRisk={() => navigate('Retention', { level: 'High' })}
+              nextBestActions={
+                !admin && (
+                  <NextBestActions
+                    data={nba}
+                    clients={clients}
+                    products={db.products}
+                    onOpen={(id) => openClient(id, 'Recommendations')}
+                  />
+                )
+              }
             />
           )}
 
           {page === 'Clients' &&
             (client ? (
               <ClientDetail
-                key={client.id}
+                key={`${client.id}-${clientTab}`}
                 client={client}
                 agent={db.users.find((u) => u.id === client.agentId)}
                 accounts={accounts.filter((a) => a.clientId === client.id)}
@@ -238,6 +411,61 @@ export default function App() {
                   )
                 }
                 onAccount={() => open({ kind: 'account', clientId: client.id })}
+                cases={caseRows}
+                caseCount={db.cases.filter((x) => x.clientId === client.id).length}
+                users={db.users}
+                sla={sla}
+                onCasesTab={() => searchCases({ clientId: client.id })}
+                onRaiseCase={() => open({ kind: 'case', clientId: client.id })}
+                onOpenCase={openCase}
+                initialTab={clientTab}
+                riskFlag={(() => {
+                  const p = riskProfiles.find((x) => x.clientId === client.id && isOpenRisk(x));
+                  return (
+                    p && (
+                      <button
+                        className="badge-button"
+                        title="Open attrition risk"
+                        onClick={() => openRisk(client.id)}
+                      >
+                        <RiskBadge level={p.level} />
+                      </button>
+                    )
+                  );
+                })()}
+                onRecoTab={() => {
+                  if (!db.recoOptOuts.includes(client.id))
+                    void run(() => service.getRecommendations(client.id), '', false);
+                }}
+                recommendations={
+                  !admin && (
+                    <RecommendationsPanel
+                      client={client}
+                      set={db.recoSets.find(
+                        (s) => s.clientId === client.id && s.status === 'Current',
+                      )}
+                      sets={db.recoSets.filter((s) => s.clientId === client.id)}
+                      products={db.products}
+                      users={db.users}
+                      optedOut={db.recoOptOuts.includes(client.id)}
+                      onRefresh={() => open({ kind: 'recoRefresh', clientId: client.id })}
+                      onSimulate={(id) => open({ kind: 'simulate', recoId: id })}
+                      onOutcome={(id) => open({ kind: 'outcome', recoId: id })}
+                      onConsent={(consent) =>
+                        confirm(
+                          consent ? 'Record restored consent?' : 'Record withdrawn consent?',
+                          consent
+                            ? `Recommendations will be generated for ${client.firstName} again.`
+                            : `No recommendations will be generated for ${client.firstName}. The current set is marked outdated.`,
+                          async () => {
+                            await service.setRecoConsent(client.id, consent);
+                            if (consent) await service.getRecommendations(client.id);
+                          },
+                        )
+                      }
+                    />
+                  )
+                }
                 onDeleteAccount={(id) =>
                   confirm(
                     'Delete bank account?',
@@ -266,6 +494,95 @@ export default function App() {
               onImport={() => open({ kind: 'import' })}
             />
           )}
+
+          {page === 'Cases' &&
+            (caseRecord ? (
+              <CaseDetail
+                key={caseRecord.id}
+                c={caseRecord}
+                client={db.clients.find((x) => x.id === caseRecord.clientId)}
+                transaction={db.transactions.find((t) => t.id === caseRecord.transactionId)}
+                users={db.users}
+                sla={sla}
+                canUpdate={!admin && caseRecord.agentId === user.id}
+                canReassign={admin && isEscalated(caseRecord)}
+                onBack={() => navigate('Cases', caseFilters)}
+                onStatus={() => open({ kind: 'caseStatus', caseId: caseRecord.id })}
+                onReassign={() => open({ kind: 'reassign', caseId: caseRecord.id })}
+                onClient={
+                  ids.has(caseRecord.clientId) ? () => openClient(caseRecord.clientId) : undefined
+                }
+              />
+            ) : (
+              <CaseList
+                key={JSON.stringify(caseFilters)}
+                rows={caseRows}
+                clients={clients}
+                users={db.users}
+                filters={caseFilters}
+                admin={admin}
+                sla={sla}
+                busy={busy}
+                onSearch={searchCases}
+                onOpen={openCase}
+                onRaise={() => open({ kind: 'case' })}
+                onSla={() => open({ kind: 'sla' })}
+              />
+            ))}
+
+          {page === 'Retention' &&
+            (riskRecord ? (
+              <RiskDetail
+                key={riskRecord.clientId}
+                profile={riskRecord}
+                client={riskClient}
+                users={db.users}
+                interventions={db.interventions.filter((i) => i.clientId === riskRecord.clientId)}
+                analysis={
+                  db.riskJob.asOf
+                    ? analyseRisk(
+                        accounts.filter((a) => a.clientId === riskRecord.clientId),
+                        transactions.filter((t) => t.clientId === riskRecord.clientId),
+                        db.cases.filter((c) => c.clientId === riskRecord.clientId),
+                        new Date(db.riskJob.asOf),
+                      )
+                    : null
+                }
+                asOf={db.riskJob.asOf}
+                canAct={!admin}
+                onBack={() => navigate('Retention', riskFilters)}
+                onIntervention={() => open({ kind: 'intervention', clientId: riskRecord.clientId })}
+                onStatus={() => open({ kind: 'riskStatus', clientId: riskRecord.clientId })}
+                onClient={() => openClient(riskRecord.clientId)}
+              />
+            ) : (
+              <RiskList
+                key={JSON.stringify(riskFilters)}
+                rows={riskRows}
+                profiles={riskProfiles}
+                clients={clients}
+                users={db.users}
+                interventions={db.interventions.filter((i) => ids.has(i.clientId))}
+                filters={riskFilters}
+                admin={admin}
+                busy={busy}
+                job={db.riskJob}
+                onSearch={searchRisks}
+                onOpen={openRisk}
+                onRunJob={() =>
+                  void run(async () => {
+                    const n = await service.runRiskAnalysis();
+                    const rows = await service.getRetentionRisks(riskFilters);
+                    setRiskIds(rows.map((p) => p.clientId));
+                    setToast(
+                      n
+                        ? `Analysis complete: ${n} ${n === 1 ? 'client' : 'clients'} newly flagged`
+                        : 'Analysis complete: no new flags',
+                    );
+                  })
+                }
+              />
+            ))}
 
           {page === 'User management' && admin && (
             <UserManagement
@@ -329,7 +646,11 @@ export default function App() {
             dialog.kind === 'client' ? 'A thoughtful start to a lasting relationship.' : undefined
           }
           guardChanges={
-            dialog.kind === 'client' || dialog.kind === 'account' || dialog.kind === 'user'
+            dialog.kind === 'client' ||
+            dialog.kind === 'account' ||
+            dialog.kind === 'user' ||
+            dialog.kind === 'case' ||
+            dialog.kind === 'intervention'
           }
           onClose={() => {
             if (!busy) {
@@ -407,6 +728,134 @@ export default function App() {
                   () => service.importTransactions(scenario),
                   'Import completed. Review the results in import history.',
                 )
+              }
+            />
+          )}
+
+          {dialog.kind === 'case' && (
+            <CaseForm
+              clients={clients}
+              transactions={transactions}
+              clientId={dialog.clientId}
+              busy={busy}
+              onSave={(v) =>
+                void run(async () => {
+                  const id = await service.raiseCase(v);
+                  setCaseId(id);
+                  setClientId(null);
+                  setPage('Cases');
+                }, 'Case raised with status Open')
+              }
+            />
+          )}
+
+          {dialog.kind === 'caseStatus' &&
+            (() => {
+              const c = db.cases.find((x) => x.id === dialog.caseId)!;
+              const to = NEXT_STATUS[c.status]!;
+              return (
+                <StatusForm
+                  c={c}
+                  to={to}
+                  busy={busy}
+                  onSave={(note) =>
+                    void run(() => service.updateCaseStatus(c.id, to, note), `Case moved to ${to}`)
+                  }
+                />
+              );
+            })()}
+
+          {dialog.kind === 'reassign' && (
+            <ReassignForm
+              c={db.cases.find((x) => x.id === dialog.caseId)!}
+              users={db.users}
+              busy={busy}
+              onSave={(agentId) =>
+                void run(() => service.reassignCase(dialog.caseId, agentId), 'Case reassigned')
+              }
+            />
+          )}
+
+          {dialog.kind === 'recoRefresh' && (
+            <RefreshForm
+              busy={busy}
+              onSave={(mode: AiMode) =>
+                void run(async () => {
+                  const set = await service.refreshRecommendations(dialog.clientId, mode);
+                  setToast(
+                    set.source === 'AI'
+                      ? 'Recommendations refreshed'
+                      : 'AI service failed. Fallback recommendations generated from eligibility rules.',
+                  );
+                })
+              }
+            />
+          )}
+
+          {(dialog.kind === 'simulate' || dialog.kind === 'outcome') &&
+            (() => {
+              const item = db.recoSets.flatMap((s) => s.items).find((r) => r.id === dialog.recoId)!;
+              const product = db.products.find((p) => p.id === item.productId)!;
+              return dialog.kind === 'simulate' ? (
+                <SimulateForm
+                  item={item}
+                  product={product}
+                  busy={busy}
+                  onSimulate={(terms) =>
+                    void run(() => service.simulateOffer(item.id, terms), '', false)
+                  }
+                />
+              ) : (
+                <OutcomeForm
+                  product={product}
+                  busy={busy}
+                  onSave={(v) =>
+                    void run(
+                      () => service.recordOutcome(item.id, v),
+                      `Outcome recorded: ${v.type.toLowerCase()}`,
+                    )
+                  }
+                />
+              );
+            })()}
+
+          {dialog.kind === 'intervention' && (
+            <InterventionForm
+              profile={db.riskProfiles.find((p) => p.clientId === dialog.clientId)!}
+              firstName={
+                db.clients.find((c) => c.id === dialog.clientId)?.firstName ?? 'the client'
+              }
+              busy={busy}
+              onSave={(v) =>
+                void run(() => service.logIntervention(dialog.clientId, v), 'Intervention logged')
+              }
+            />
+          )}
+
+          {dialog.kind === 'riskStatus' && (
+            <RiskStatusForm
+              profile={db.riskProfiles.find((p) => p.clientId === dialog.clientId)!}
+              busy={busy}
+              onSave={(to, note) =>
+                void run(
+                  () => service.updateRiskStatus(dialog.clientId, to, note),
+                  `Risk status moved to ${to}`,
+                )
+              }
+            />
+          )}
+
+          {dialog.kind === 'sla' && (
+            <SlaForm
+              days={sla}
+              busy={busy}
+              onSave={(days) =>
+                void run(async () => {
+                  const n = await service.updateSla(days);
+                  setToast(
+                    n ? `SLA saved. ${n} ${n === 1 ? 'case' : 'cases'} escalated.` : 'SLA saved',
+                  );
+                })
               }
             />
           )}

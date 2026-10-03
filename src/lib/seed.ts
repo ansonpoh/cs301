@@ -1,5 +1,84 @@
 import type { Database } from './types';
 import { maskValue } from './audit';
+import { analyseRisk, analysisDate } from './retention';
+
+// Admin-maintained product catalogue; the recommendation engine may only suggest these.
+const PRODUCTS: Database['products'] = [
+  {
+    id: 'PRD-FD12',
+    name: 'Fixed Deposit',
+    category: 'Deposits',
+    summary: 'Guaranteed returns on idle funds for a fixed term.',
+    eligibility: { minAge: 18, maxAge: 100, minRelationship: 10_000 },
+    terms: {
+      amount: { min: 1_000, max: 500_000 },
+      tenureMonths: { min: 3, max: 36 },
+      rate: { min: 2, max: 4 },
+    },
+    preApproval: { maxAmountShare: 1, rateAtMost: 3.2 },
+  },
+  {
+    id: 'PRD-HYS',
+    name: 'High-Yield Savings Account',
+    category: 'Accounts',
+    summary: 'Bonus interest when salary is credited monthly.',
+    eligibility: { minAge: 18, maxAge: 100, excludesAccountType: 'Savings' },
+    opensAccount: 'Savings',
+  },
+  {
+    id: 'PRD-BIZ',
+    name: 'Business Current Account',
+    category: 'Accounts',
+    summary: 'Multi-currency account for sole proprietors and SMEs.',
+    eligibility: {
+      minAge: 21,
+      maxAge: 100,
+      minMonthlyInflow: 3_000,
+      excludesAccountType: 'Business',
+    },
+    opensAccount: 'Business',
+  },
+  {
+    id: 'PRD-CC',
+    name: 'Rewards Credit Card',
+    category: 'Cards',
+    summary: 'Cashback on dining and travel with no annual fee in year one.',
+    eligibility: { minAge: 21, maxAge: 75, minMonthlyInflow: 2_500, requiresVerified: true },
+    terms: { amount: { min: 1_000, max: 50_000 } },
+    preApproval: { maxAmountShare: 0.2 },
+  },
+  {
+    id: 'PRD-PL',
+    name: 'Personal Instalment Loan',
+    category: 'Loans',
+    summary: 'Fixed monthly repayments for planned expenses.',
+    eligibility: { minAge: 21, maxAge: 65, minMonthlyInflow: 2_000, requiresVerified: true },
+    terms: {
+      amount: { min: 5_000, max: 200_000 },
+      tenureMonths: { min: 12, max: 84 },
+      rate: { min: 3.5, max: 9 },
+    },
+    preApproval: { maxAmountShare: 0.3, maxTenureMonths: 60, rateAtLeast: 4.5 },
+  },
+  {
+    id: 'PRD-INV',
+    name: 'Managed Portfolio',
+    category: 'Investments',
+    summary: 'Diversified portfolio managed to the client’s risk profile.',
+    eligibility: { minAge: 21, maxAge: 80, minRelationship: 50_000, requiresVerified: true },
+    terms: { amount: { min: 10_000, max: 1_000_000 } },
+    preApproval: { maxAmountShare: 0.5 },
+  },
+  {
+    id: 'PRD-LIFE',
+    name: 'Term Life Cover',
+    category: 'Insurance',
+    summary: 'Affordable protection for dependants over a fixed term.',
+    eligibility: { minAge: 18, maxAge: 60 },
+    terms: { amount: { min: 50_000, max: 2_000_000 }, tenureMonths: { min: 60, max: 360 } },
+    preApproval: { maxTenureMonths: 300 },
+  },
+];
 
 export function createSeed(): Database {
   const names = [
@@ -93,6 +172,26 @@ export function createSeed(): Database {
       status: j === 4 && i % 3 === 0 ? 'Pending' : j === 3 && i === 1 ? 'Failed' : 'Completed',
     })),
   );
+  // Large outflows that the attrition job (feature 5) flags as balance drops.
+  transactions.push(
+    ...(
+      [
+        ['CL-1001', 'AC-80001', 6_000, '2026-09-28T10:15:00Z'],
+        ['CL-1004', 'AC-80003', 12_000, '2026-09-27T11:40:00Z'],
+        ['CL-1008', 'AC-80006', 20_000, '2026-09-27T14:05:00Z'],
+        ['CL-1008', 'AC-80006', 15_000, '2026-09-28T15:20:00Z'],
+        ['CL-1009', 'AC-80007', 36_000, '2026-09-27T16:10:00Z'],
+      ] as const
+    ).map(([clientId, accountId, amount, date], i) => ({
+      id: `TX-${40101 + i}`,
+      clientId,
+      accountId,
+      type: 'Withdrawal' as const,
+      amount,
+      date,
+      status: 'Completed' as const,
+    })),
+  );
 
   const audit: Database['audit'] = clients.map((c, i) =>
     i % 3 === 0
@@ -130,12 +229,263 @@ export function createSeed(): Database {
         },
   );
 
+  // Case dates are relative to now so the SLA demo works whenever the seed is created.
+  const ago = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+  // Oldest transaction of the given type, so it predates the case that disputes it.
+  const txFor = (clientId: string, type: 'Deposit' | 'Withdrawal') =>
+    transactions.filter((t) => t.clientId === clientId && t.type === type).at(-1)!.id;
+  const cases: Database['cases'] = [
+    {
+      id: 'CASE-1001',
+      clientId: 'CL-1001',
+      agentId: 'USR-003',
+      category: 'Transaction dispute',
+      description: 'Client reports this withdrawal was debited twice from the account.',
+      transactionId: txFor('CL-1001', 'Withdrawal'),
+      status: 'Investigating',
+      escalated: false,
+      createdAt: ago(8),
+      slaStartedAt: ago(8),
+      history: [
+        { type: 'CASE_CREATED', at: ago(8), actorId: 'USR-003' },
+        {
+          type: 'STATUS_UPDATED',
+          at: ago(7),
+          actorId: 'USR-003',
+          from: 'Open',
+          to: 'Investigating',
+          note: 'Requested ledger extract from operations.',
+        },
+      ],
+    },
+    {
+      id: 'CASE-1002',
+      clientId: 'CL-1002',
+      agentId: 'USR-003',
+      category: 'Service complaint',
+      description: 'Client waited over 40 minutes at the branch counter without being served.',
+      status: 'Open',
+      escalated: false,
+      createdAt: ago(1),
+      slaStartedAt: ago(1),
+      history: [{ type: 'CASE_CREATED', at: ago(1), actorId: 'USR-003' }],
+    },
+    {
+      id: 'CASE-1003',
+      clientId: 'CL-1004',
+      agentId: 'USR-003',
+      category: 'Account issue',
+      description: 'Online banking access locked after password change.',
+      status: 'Resolved',
+      escalated: false,
+      createdAt: ago(10),
+      slaStartedAt: ago(10),
+      resolvedAt: ago(9),
+      history: [
+        { type: 'CASE_CREATED', at: ago(10), actorId: 'USR-003' },
+        {
+          type: 'STATUS_UPDATED',
+          at: ago(9.8),
+          actorId: 'USR-003',
+          from: 'Open',
+          to: 'Investigating',
+          note: 'Raised ticket with digital banking support.',
+        },
+        {
+          type: 'STATUS_UPDATED',
+          at: ago(9),
+          actorId: 'USR-003',
+          from: 'Investigating',
+          to: 'Resolved',
+          note: 'Access restored; client confirmed sign-in works.',
+        },
+      ],
+    },
+    {
+      id: 'CASE-1004',
+      clientId: 'CL-1009',
+      agentId: 'USR-004',
+      category: 'Transaction dispute',
+      description: 'Client does not recognise this deposit and asked for its source.',
+      transactionId: txFor('CL-1009', 'Deposit'),
+      status: 'Open',
+      escalated: false,
+      createdAt: ago(9),
+      slaStartedAt: ago(9),
+      history: [{ type: 'CASE_CREATED', at: ago(9), actorId: 'USR-004' }],
+    },
+    {
+      id: 'CASE-1005',
+      clientId: 'CL-1011',
+      agentId: 'USR-004',
+      category: 'Other',
+      description: 'Client asked for monthly statements to be sent by post instead of email.',
+      status: 'Investigating',
+      escalated: false,
+      createdAt: ago(1.5),
+      slaStartedAt: ago(1.5),
+      history: [
+        { type: 'CASE_CREATED', at: ago(1.5), actorId: 'USR-004' },
+        {
+          type: 'STATUS_UPDATED',
+          at: ago(1),
+          actorId: 'USR-004',
+          from: 'Open',
+          to: 'Investigating',
+          note: 'Checking statement delivery options with operations.',
+        },
+      ],
+    },
+  ];
+
+  // Open risk flags come from the same analysis the scheduled job runs; closed ones are history.
+  const asOf = analysisDate(transactions);
+  const riskProfiles: Database['riskProfiles'] = ['CL-1001', 'CL-1004', 'CL-1008', 'CL-1009'].map(
+    (clientId, i) => {
+      const r = analyseRisk(
+        accounts.filter((a) => a.clientId === clientId),
+        transactions.filter((t) => t.clientId === clientId),
+        cases.filter((c) => c.clientId === clientId),
+        asOf,
+      );
+      const flaggedAt = ago(2 + i);
+      return {
+        clientId,
+        level: r!.level,
+        score: r!.score,
+        reasons: r!.reasons,
+        status: 'At Risk',
+        flaggedAt,
+        history: [{ type: 'RISK_FLAGGED', at: flaggedAt, to: r!.level }],
+      };
+    },
+  );
+  const interventions: Database['interventions'] = [
+    {
+      id: 'INT-1001',
+      clientId: 'CL-1004',
+      agentId: 'USR-003',
+      type: 'Financial Review Conducted',
+      notes:
+        'Reviewed the large withdrawal with the client: funds went to a property down payment. Agreed to review the savings plan next month.',
+      at: ago(1),
+    },
+    {
+      id: 'INT-1002',
+      clientId: 'CL-1005',
+      agentId: 'USR-003',
+      type: 'Fee Waiver Offered',
+      notes: 'Client was unhappy with monthly account fees. Waived fees for six months.',
+      at: ago(10),
+    },
+    {
+      id: 'INT-1003',
+      clientId: 'CL-1011',
+      agentId: 'USR-004',
+      type: 'Relationship Check-in',
+      notes: 'Called to understand the reduced activity. Client is travelling and will resume.',
+      at: ago(11),
+    },
+    {
+      id: 'INT-1004',
+      clientId: 'CL-1012',
+      agentId: 'USR-004',
+      type: 'Retention Offer Made',
+      notes: 'Offered a preferential fixed deposit rate. Client is comparing offers elsewhere.',
+      at: ago(13),
+    },
+  ];
+  const lucas = riskProfiles[1];
+  lucas.status = 'Under Review';
+  lucas.history.push(
+    { type: 'INTERVENTION_LOGGED', at: ago(1), actorId: 'USR-003', interventionId: 'INT-1001' },
+    { type: 'STATUS_UPDATED', at: ago(1), actorId: 'USR-003', from: 'At Risk', to: 'Under Review' },
+  );
+  const closed = (
+    clientId: string,
+    agentId: string,
+    level: 'High' | 'Medium',
+    reason: string,
+    days: [flagged: number, intervened: number, closed: number],
+    to: 'Mitigated' | 'Churned',
+    note: string,
+  ): Database['riskProfiles'][number] => ({
+    clientId,
+    level,
+    score: level === 'High' ? 50 : 25,
+    reasons: [reason],
+    status: to,
+    flaggedAt: ago(days[0]),
+    closedAt: ago(days[2]),
+    history: [
+      { type: 'RISK_FLAGGED', at: ago(days[0]), to: level },
+      {
+        type: 'INTERVENTION_LOGGED',
+        at: ago(days[1]),
+        actorId: agentId,
+        interventionId: interventions.find((x) => x.clientId === clientId)!.id,
+      },
+      {
+        type: 'STATUS_UPDATED',
+        at: ago(days[1]),
+        actorId: agentId,
+        from: 'At Risk',
+        to: 'Under Review',
+      },
+      {
+        type: 'STATUS_UPDATED',
+        at: ago(days[2]),
+        actorId: agentId,
+        from: 'Under Review',
+        to,
+        note,
+      },
+    ],
+  });
+  riskProfiles.push(
+    closed(
+      'CL-1005',
+      'USR-003',
+      'Medium',
+      '34% balance drop in 30 days',
+      [12, 10, 5],
+      'Mitigated',
+      'Client confirmed salary will keep crediting to this account.',
+    ),
+    closed(
+      'CL-1011',
+      'USR-004',
+      'Medium',
+      'Transaction frequency down 60% and deposits slowing',
+      [14, 11, 6],
+      'Mitigated',
+      'Activity resumed after the client returned from travel.',
+    ),
+    closed(
+      'CL-1012',
+      'USR-004',
+      'High',
+      '58% balance drop in 30 days',
+      [15, 13, 7],
+      'Churned',
+      'Client moved main savings to another bank.',
+    ),
+  );
+
   return {
     version: 1,
+    riskProfiles,
+    interventions,
+    riskJob: {},
     users,
     clients,
     accounts,
     transactions,
+    cases,
+    caseSettings: { slaBusinessDays: 3 },
+    products: PRODUCTS,
+    recoSets: [],
+    recoOptOuts: [],
     audit: audit.sort((a, b) => b.at.localeCompare(a.at)),
     imports: [
       {
