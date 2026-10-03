@@ -269,7 +269,11 @@ export default function Overview({
                     {c.firstName} {c.lastName}
                   </strong>
                   <small>
-                    {c.verification === 'Rejected' ? 'Review required' : 'Awaiting verification'}
+                    {c.verification === 'Failed'
+                      ? 'Verification failed'
+                      : c.verification === 'Manual Review'
+                        ? 'Manual review'
+                        : 'Awaiting verification'}
                   </small>
                 </span>
                 <ChevronRight size={17} />

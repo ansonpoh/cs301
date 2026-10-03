@@ -7,7 +7,6 @@ const CRUD_BY_ACTION: Record<string, Crud> = {
   'Transaction import': 'Create',
   'Client viewed': 'Read',
   'Client updated': 'Update',
-  'Identity verification simulated': 'Update',
   'User updated': 'Update',
   'User enabled': 'Update',
   'User disabled': 'Update',
@@ -30,6 +29,19 @@ const CRUD_BY_ACTION: Record<string, Crud> = {
   RISK_FLAGGED: 'Create',
   RISK_UPDATED: 'Update',
   INTERVENTION_LOGGED: 'Create',
+  'Account activated': 'Update',
+  IDENTITY_VERIFICATION_REQUESTED: 'Create',
+  IDENTITY_EVIDENCE_UPLOADED: 'Create',
+  IDENTITY_STATUS_UPDATED: 'Update',
+  WEALTH_CASE_CREATED: 'Create',
+  WEALTH_REVERIFICATION_REQUESTED: 'Create',
+  WEALTH_DECLARATION_UPDATED: 'Update',
+  WEALTH_EVIDENCE_UPLOADED: 'Create',
+  WEALTH_CASE_SUBMITTED: 'Update',
+  WEALTH_ANALYSIS_COMPLETED: 'Update',
+  WEALTH_DECISION_RECORDED: 'Update',
+  WEALTH_PROFILE_VIEWED: 'Read',
+  WEALTH_CASE_VIEWED: 'Read',
 };
 
 // Login and logout are session events rather than CRUD operations on a record.
@@ -58,6 +70,8 @@ export const FIELD_LABELS: Record<string, string> = {
   recoConsent: 'Recommendation Consent',
   riskStatus: 'Risk Status',
   riskLevel: 'Risk Level',
+  accountStatus: 'Account Status',
+  wealthStatus: 'Wealth Case Status',
 };
 
 const stars = (n: number) => '*'.repeat(Math.max(3, Math.min(n, 8)));

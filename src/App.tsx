@@ -1,7 +1,15 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { DemoService } from './lib/service';
-import type { User, Client, CaseFilters, AiMode, RiskFilters } from './lib/types';
+import type { User, Client, CaseFilters, AiMode, RiskFilters, WealthFilters } from './lib/types';
+import { VerificationPanel, VerificationQueue } from './features/verification/Verification';
+import {
+  EvidenceForm,
+  IdentityReviewForm,
+  IdentityUploadForm,
+  WealthCaseForm,
+  WealthDecisionForm,
+} from './features/verification/VerificationForms';
 import { NEXT_STATUS, isEscalated } from './lib/cases';
 import { Modal } from './components/ui';
 import HelpGuide from './components/HelpGuide';
@@ -13,7 +21,6 @@ import Overview from './features/Overview';
 import { ClientList, ClientDetail } from './features/clients/Clients';
 import ClientForm from './features/clients/ClientForm';
 import AccountForm from './features/clients/AccountForm';
-import VerificationForm from './features/clients/VerificationForm';
 import Transactions from './features/transactions/Transactions';
 import ImportForm from './features/transactions/ImportForm';
 import UserForm from './features/users/UserForm';
@@ -37,7 +44,11 @@ const service = new DemoService(localStorage);
 type Dialog =
   | { kind: 'client'; client?: Client }
   | { kind: 'account'; clientId: string }
-  | { kind: 'verify'; clientId: string }
+  | { kind: 'idUpload'; checkId: string }
+  | { kind: 'idReview'; checkId: string }
+  | { kind: 'wealthCase'; clientId: string; caseId?: string }
+  | { kind: 'evidence'; caseId: string; assetId: string; docType: string }
+  | { kind: 'wealthDecision'; caseId: string }
   | { kind: 'import' }
   | { kind: 'user'; user?: User }
   | { kind: 'case'; clientId?: string }
@@ -58,8 +69,16 @@ function dialogTitle(dialog: Dialog) {
       return dialog.client ? 'Edit client profile' : 'Onboard a new client';
     case 'account':
       return 'Open a bank account';
-    case 'verify':
-      return 'Verify client identity';
+    case 'idUpload':
+      return 'Simulate NRIC upload';
+    case 'idReview':
+      return 'Resolve identity review';
+    case 'wealthCase':
+      return dialog.caseId ? 'Edit wealth declaration' : 'Declare client wealth';
+    case 'evidence':
+      return 'Upload wealth evidence';
+    case 'wealthDecision':
+      return 'Record wealth review decision';
     case 'import':
       return 'Import transactions';
     case 'user':
@@ -108,6 +127,8 @@ export default function App() {
   const [riskFilters, setRiskFilters] = useState<RiskFilters>({});
   const [riskIds, setRiskIds] = useState<string[]>([]);
   const [riskClientId, setRiskClientId] = useState<string | null>(null);
+  const [wealthFilters, setWealthFilters] = useState<WealthFilters>({});
+  const [wealthIds, setWealthIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (toast) {
@@ -203,7 +224,19 @@ export default function App() {
       false,
     );
 
-  const navigate = (p: string, filters: CaseFilters | RiskFilters = {}) => {
+  // Each verification queue load is logged once as WEALTH_CASE_VIEWED.
+  const searchWealth = (filters: WealthFilters) =>
+    void run(
+      async () => {
+        const rows = await service.searchWealthCases(filters);
+        setWealthIds(rows.map((w) => w.id));
+        setWealthFilters(filters);
+      },
+      '',
+      false,
+    );
+
+  const navigate = (p: string, filters: CaseFilters | RiskFilters | WealthFilters = {}) => {
     setPage(p);
     setClientId(null);
     setCaseId(null);
@@ -212,6 +245,7 @@ export default function App() {
     setError('');
     if (p === 'Cases') searchCases(filters as CaseFilters);
     if (p === 'Retention') searchRisks(filters as RiskFilters);
+    if (p === 'Verification') searchWealth(filters as WealthFilters);
   };
 
   const openRisk = (id: string) =>
@@ -244,6 +278,7 @@ export default function App() {
       async () => {
         await service.viewClient(id);
         if (tab === 'Recommendations') await service.getRecommendations(id);
+        if (tab === 'Verification') await service.viewWealthProfile(id);
         setClientTab(tab);
         setClientId(id);
         setCaseId(null);
@@ -300,6 +335,15 @@ export default function App() {
     page === 'Retention' ? riskProfiles.find((p) => p.clientId === riskClientId) : undefined;
   const riskClient = riskRecord && db.clients.find((c) => c.id === riskRecord.clientId);
   const highRisk = riskProfiles.filter((p) => isOpenRisk(p) && p.level === 'High').length;
+  const identityChecks = db.identityChecks.filter((x) => ids.has(x.clientId));
+  const wealthCases = db.wealthCases.filter((w) => ids.has(w.clientId));
+  const wealthRows = wealthIds.flatMap((id) => wealthCases.filter((w) => w.id === id));
+  // Admins see reviews waiting for a decision; agents see work waiting on them.
+  const verifyCount = admin
+    ? identityChecks.filter((x) => x.status === 'Manual Review').length +
+      wealthCases.filter((w) => w.status === 'Under Review').length
+    : identityChecks.filter((x) => x.status === 'Awaiting Upload').length +
+      wealthCases.filter((w) => w.status === 'More Information Required').length;
 
   const pageTitle = client
     ? `${client.firstName} ${client.lastName}`
@@ -320,6 +364,7 @@ export default function App() {
         clientCount={clients.length}
         caseCount={escalated.length}
         riskCount={highRisk}
+        verifyCount={verifyCount}
         open={menu}
         onNavigate={navigate}
         onClose={() => setMenu(false)}
@@ -397,7 +442,44 @@ export default function App() {
                 canEdit={!admin}
                 onBack={() => setClientId(null)}
                 onEdit={() => open({ kind: 'client', client })}
-                onVerify={() => open({ kind: 'verify', clientId: client.id })}
+                onVerificationTab={() =>
+                  void run(() => service.viewWealthProfile(client.id), '', false)
+                }
+                verification={
+                  <VerificationPanel
+                    client={client}
+                    accounts={accounts.filter((a) => a.clientId === client.id)}
+                    checks={identityChecks.filter((x) => x.clientId === client.id)}
+                    cases={wealthCases.filter((w) => w.clientId === client.id)}
+                    users={db.users}
+                    canEdit={!admin}
+                    canReview={admin}
+                    onRequestIdentity={() =>
+                      confirm(
+                        'Request identity verification?',
+                        `${client.firstName} is emailed a secure link to upload an NRIC image (simulated; no email is sent). The link expires in 7 days.`,
+                        () => service.requestIdentityVerification(client.id),
+                      )
+                    }
+                    onUpload={(checkId) => open({ kind: 'idUpload', checkId })}
+                    onReviewIdentity={(checkId) => open({ kind: 'idReview', checkId })}
+                    onStartWealth={() => open({ kind: 'wealthCase', clientId: client.id })}
+                    onEditWealth={(caseId) =>
+                      open({ kind: 'wealthCase', clientId: client.id, caseId })
+                    }
+                    onEvidence={(caseId, assetId, docType) =>
+                      open({ kind: 'evidence', caseId, assetId, docType })
+                    }
+                    onSubmitWealth={(caseId) =>
+                      confirm(
+                        'Submit for review?',
+                        'The case moves to Under Review and the automated checks run. The declaration and evidence are locked until a reviewer decides.',
+                        () => service.submitWealthCase(caseId),
+                      )
+                    }
+                    onDecide={(caseId) => open({ kind: 'wealthDecision', caseId })}
+                  />
+                }
                 onDelete={() =>
                   confirm(
                     'Delete client profile?',
@@ -530,6 +612,21 @@ export default function App() {
               />
             ))}
 
+          {page === 'Verification' && (
+            <VerificationQueue
+              key={JSON.stringify(wealthFilters)}
+              checks={identityChecks}
+              cases={wealthCases}
+              rows={wealthRows}
+              clients={clients}
+              filters={wealthFilters}
+              admin={admin}
+              busy={busy}
+              onSearch={searchWealth}
+              onOpen={(id) => openClient(id, 'Verification')}
+            />
+          )}
+
           {page === 'Retention' &&
             (riskRecord ? (
               <RiskDetail
@@ -650,7 +747,8 @@ export default function App() {
             dialog.kind === 'account' ||
             dialog.kind === 'user' ||
             dialog.kind === 'case' ||
-            dialog.kind === 'intervention'
+            dialog.kind === 'intervention' ||
+            dialog.kind === 'wealthCase'
           }
           onClose={() => {
             if (!busy) {
@@ -708,13 +806,92 @@ export default function App() {
             />
           )}
 
-          {dialog.kind === 'verify' && (
-            <VerificationForm
+          {dialog.kind === 'idUpload' &&
+            (() => {
+              const check = db.identityChecks.find((x) => x.id === dialog.checkId)!;
+              return (
+                <IdentityUploadForm
+                  client={db.clients.find((c) => c.id === check.clientId)!}
+                  busy={busy}
+                  onSave={(scenario) =>
+                    void run(async () => {
+                      await service.simulateIdentityUpload(check.id, scenario);
+                      const outcome = service
+                        .snapshot()
+                        .identityChecks.find((x) => x.id === check.id)!.status;
+                      setToast(`NRIC processed: ${outcome}`);
+                    })
+                  }
+                />
+              );
+            })()}
+
+          {dialog.kind === 'idReview' && (
+            <IdentityReviewForm
+              check={db.identityChecks.find((x) => x.id === dialog.checkId)!}
               busy={busy}
-              onSave={(outcome) =>
+              onSave={(outcome, rationale) =>
                 void run(
-                  () => service.verify(dialog.clientId, outcome),
-                  `Identity review complete: ${outcome.toLowerCase()}`,
+                  () => service.resolveIdentityReview(dialog.checkId, outcome, rationale),
+                  `Identity marked ${outcome}`,
+                )
+              }
+            />
+          )}
+
+          {dialog.kind === 'wealthCase' && (
+            <WealthCaseForm
+              existing={db.wealthCases.find((w) => w.id === dialog.caseId)}
+              busy={busy}
+              onSave={(v) =>
+                void run(
+                  () =>
+                    dialog.caseId
+                      ? service.updateWealthDeclaration(dialog.caseId, v)
+                      : service.createWealthCase(dialog.clientId, v),
+                  dialog.caseId
+                    ? 'Declaration updated'
+                    : 'Wealth case created. Upload the evidence on the checklist.',
+                )
+              }
+            />
+          )}
+
+          {dialog.kind === 'evidence' &&
+            (() => {
+              const wc = db.wealthCases.find((w) => w.id === dialog.caseId)!;
+              return (
+                <EvidenceForm
+                  asset={wc.assets.find((a) => a.id === dialog.assetId)!}
+                  docType={dialog.docType}
+                  busy={busy}
+                  onSave={(scenario) =>
+                    void run(async () => {
+                      const e = await service.uploadWealthEvidence(
+                        wc.id,
+                        dialog.assetId,
+                        dialog.docType,
+                        scenario,
+                      );
+                      setToast(
+                        e.status === 'Accepted'
+                          ? `${dialog.docType} accepted`
+                          : `${dialog.docType} rejected: ${e.reason}`,
+                      );
+                    })
+                  }
+                />
+              );
+            })()}
+
+          {dialog.kind === 'wealthDecision' && (
+            <WealthDecisionForm
+              wc={db.wealthCases.find((w) => w.id === dialog.caseId)!}
+              busy={busy}
+              onSave={(outcome, rationale, info) =>
+                void run(
+                  () => service.decideWealthCase(dialog.caseId, outcome, rationale, info),
+                  `Wealth case marked ${outcome}`,
                 )
               }
             />

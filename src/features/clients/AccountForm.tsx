@@ -11,7 +11,6 @@ export default function AccountForm({
 }) {
   const [v, setV] = useState<AccountInput>({
     type: 'Savings',
-    status: 'Active',
     openingDate: new Date().toISOString().slice(0, 10),
     initialDeposit: 0,
     currency: 'SGD',
@@ -33,16 +32,6 @@ export default function AccountForm({
               onChange={(e) => setV({ ...v, type: e.target.value as AccountInput['type'] })}
             >
               {['Savings', 'Checking', 'Business'].map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Account status">
-            <select
-              value={v.status}
-              onChange={(e) => setV({ ...v, status: e.target.value as AccountInput['status'] })}
-            >
-              {['Active', 'Inactive', 'Pending'].map((t) => (
                 <option key={t}>{t}</option>
               ))}
             </select>
@@ -83,8 +72,9 @@ export default function AccountForm({
           </Field>
         </div>
         <p className="notice">
-          An account ID is assigned automatically. The initial deposit is a demo value; no funds are
-          transferred.
+          An account ID is assigned automatically. New accounts open as Pending and activate once
+          identity verification and any required wealth review pass. The initial deposit is a demo
+          value; no funds are transferred.
         </p>
       </div>
       <div className="modal-footer">

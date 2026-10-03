@@ -1,6 +1,7 @@
 import type { Database } from './types';
 import { maskValue } from './audit';
 import { analyseRisk, analysisDate } from './retention';
+import { EVIDENCE_REQUIREMENTS, analyseWealth, scanEvidence } from './verification';
 
 // Admin-maintained product catalogue; the recommendation engine may only suggest these.
 const PRODUCTS: Database['products'] = [
@@ -146,7 +147,7 @@ export function createSeed(): Database {
     state: 'Singapore',
     country: 'Singapore',
     postal: `${238001 + i}`,
-    verification: i === 2 || i === 5 || i === 9 ? 'Pending' : 'Verified',
+    verification: i === 5 ? 'Manual Review' : i === 2 || i === 9 ? 'Pending' : 'Verified',
     createdAt: `2026-09-${String(10 + i).padStart(2, '0')}T08:00:00Z`,
   }));
   const accounts: Database['accounts'] = clients
@@ -472,7 +473,115 @@ export function createSeed(): Database {
     ),
   );
 
+  // Feature 2: a high-value account waiting on identity and wealth checks (CL-1003), an identity
+  // check routed to manual review (CL-1006), one awaiting the client's upload (CL-1010), and a
+  // wealth case ready for an admin decision (CL-1002).
+  accounts.push({
+    id: 'AC-80010',
+    clientId: 'CL-1003',
+    type: 'Business',
+    status: 'Pending',
+    openingDate: '2026-09-25',
+    initialDeposit: 250_000,
+    currency: 'SGD',
+    branchId: 'SG-001',
+  });
+  const identityChecks: Database['identityChecks'] = [
+    {
+      id: 'IDV-1001',
+      clientId: 'CL-1006',
+      requestedBy: 'USR-003',
+      requestedAt: ago(2),
+      status: 'Manual Review',
+      uploadedAt: ago(1.8),
+      evidenceId: 'EVD-1001',
+      reason: 'Extraction confidence 41% is below the 85% threshold',
+    },
+    {
+      id: 'IDV-1002',
+      clientId: 'CL-1010',
+      requestedBy: 'USR-004',
+      requestedAt: ago(1),
+      status: 'Awaiting Upload',
+    },
+  ];
+  const day = (n: number) => ago(n).slice(0, 10);
+  const wc: Database['wealthCases'][number] = {
+    id: 'WC-1001',
+    clientId: 'CL-1002',
+    agentId: 'USR-003',
+    version: 1,
+    status: 'Under Review',
+    createdAt: ago(6),
+    updatedAt: ago(1),
+    assets: [
+      {
+        id: 'AST-1001',
+        type: 'Stocks / funds',
+        description: 'Brokerage portfolio (global equities)',
+        ownershipPct: 100,
+        declaredValue: 180_000,
+        valuationDate: day(20),
+        origin: 'Employment income',
+      },
+      {
+        id: 'AST-1002',
+        type: 'Property',
+        description: 'Condominium unit, River Valley',
+        ownershipPct: 50,
+        declaredValue: 1_450_000,
+        valuationDate: day(420),
+        origin: 'Property sale',
+      },
+    ],
+    liabilities: 520_000,
+    sourceNarrative:
+      'Salary savings from 12 years in banking operations, invested monthly; condominium bought jointly with spouse using proceeds from the sale of an HDB flat.',
+    evidence: [],
+    history: [],
+  };
+  wc.evidence = wc.assets.flatMap((a, i) =>
+    EVIDENCE_REQUIREMENTS[a.type].map((r, j) => ({
+      id: `EVD-20${i}${j}`,
+      assetId: a.id,
+      docType: r.docType,
+      uploadedAt: ago(4 - j * 0.1),
+      uploadedBy: 'USR-003',
+      ...scanEvidence(clients[1], a, r, 'consistent'),
+    })),
+  );
+  const analysed = analyseWealth(clients[1], wc);
+  wc.analysis = {
+    at: ago(1),
+    jobId: 'JOB-1001',
+    exceptions: analysed.exceptions,
+    claims: analysed.claims,
+  };
+  wc.history = [
+    { type: 'WEALTH_CASE_CREATED', at: ago(6), actorId: 'USR-003', to: 'Pending Evidence' },
+    {
+      type: 'WEALTH_EVIDENCE_UPLOADED',
+      at: ago(4),
+      actorId: 'USR-003',
+      note: `${wc.evidence.length} documents · Accepted`,
+    },
+    {
+      type: 'WEALTH_CASE_SUBMITTED',
+      at: ago(1),
+      actorId: 'USR-003',
+      from: 'Pending Evidence',
+      to: 'Under Review',
+    },
+    {
+      type: 'WEALTH_ANALYSIS_COMPLETED',
+      at: ago(1),
+      note: `${analysed.exceptions.length} exception(s)`,
+    },
+  ];
+
   return {
+    identityChecks,
+    wealthCases: [wc],
     version: 1,
     riskProfiles,
     interventions,

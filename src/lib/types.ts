@@ -23,8 +23,116 @@ export interface Client {
   state: string;
   country: string;
   postal: string;
-  verification: 'Pending' | 'Verified' | 'Rejected';
+  verification: IdentityStatus;
   createdAt: string;
+}
+
+export type IdentityStatus = 'Pending' | 'Verified' | 'Failed' | 'Manual Review';
+// What the simulated NRIC upload contains, standing in for a real document and extraction.
+export type IdentityScenario = 'match' | 'mismatch' | 'unclear' | 'service-down';
+export interface IdentityCheck {
+  id: string;
+  clientId: string;
+  requestedBy: string;
+  requestedAt: string;
+  status: 'Awaiting Upload' | 'Verified' | 'Failed' | 'Manual Review';
+  uploadedAt?: string;
+  evidenceId?: string;
+  // Extracted fields; the NRIC is only ever stored masked.
+  extracted?: { name: string; nric: string; dob: string; confidence: number };
+  mismatches?: string[];
+  // Why extraction could not decide, which routes the check to manual review.
+  reason?: string;
+  review?: { reviewerId: string; at: string; outcome: 'Verified' | 'Failed'; rationale: string };
+}
+
+export type AssetType = 'Stocks / funds' | 'Crypto' | 'Property' | 'Business interest';
+export type WealthOrigin =
+  | 'Employment income'
+  | 'Business proceeds'
+  | 'Inheritance'
+  | 'Investment gains'
+  | 'Property sale'
+  | 'Other';
+export type WealthStatus =
+  'Pending Evidence' | 'Under Review' | 'More Information Required' | 'Verified' | 'Rejected';
+export interface WealthAsset {
+  id: string;
+  type: AssetType;
+  description: string;
+  ownershipPct: number;
+  // Value of the whole asset; the client's share follows from ownershipPct.
+  declaredValue: number;
+  valuationDate: string;
+  origin: WealthOrigin;
+}
+export type EvidenceScenario = 'consistent' | 'inconsistent' | 'unsupported';
+export interface WealthEvidence {
+  id: string;
+  assetId: string;
+  docType: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  status: 'Accepted' | 'Rejected';
+  reason?: string;
+  extracted?: { owner?: string; value?: number; date: string; originConsistent?: boolean };
+}
+export interface ClaimAssessment {
+  assetId: string;
+  ownership: 'Corroborated' | 'Exception';
+  valuation: 'Corroborated' | 'Exception' | 'Stale';
+  origin: 'Documented' | 'Needs review';
+  corroboratedValue?: number;
+  notes: string[];
+}
+export interface WealthEvent {
+  type:
+    | 'WEALTH_CASE_CREATED'
+    | 'WEALTH_DECLARATION_UPDATED'
+    | 'WEALTH_EVIDENCE_UPLOADED'
+    | 'WEALTH_CASE_SUBMITTED'
+    | 'WEALTH_ANALYSIS_COMPLETED'
+    | 'WEALTH_DECISION_RECORDED';
+  at: string;
+  // Analysis is system-run, so it carries no actor.
+  actorId?: string;
+  from?: WealthStatus;
+  to?: WealthStatus;
+  note?: string;
+}
+export interface WealthCase {
+  id: string;
+  clientId: string;
+  agentId: string;
+  // Re-verification creates a new case with the next version; earlier cases are kept.
+  version: number;
+  status: WealthStatus;
+  createdAt: string;
+  updatedAt: string;
+  assets: WealthAsset[];
+  liabilities: number;
+  // May contain PII: kept in the case record, never written to the audit log.
+  sourceNarrative: string;
+  // Newest first.
+  evidence: WealthEvidence[];
+  analysis?: { at: string; jobId: string; exceptions: string[]; claims: ClaimAssessment[] };
+  decision?: {
+    reviewerId: string;
+    at: string;
+    outcome: 'Verified' | 'More Information Required' | 'Rejected';
+    rationale: string;
+    requestedInfo?: string;
+  };
+  history: WealthEvent[];
+}
+export interface WealthInput {
+  assets: (Omit<WealthAsset, 'id'> & { id?: string })[];
+  liabilities: number;
+  sourceNarrative: string;
+}
+export interface WealthFilters {
+  status?: WealthStatus | 'Open';
+  clientId?: string;
 }
 
 export interface Account {
@@ -254,8 +362,11 @@ export interface Database {
   riskProfiles: RiskProfile[];
   interventions: Intervention[];
   riskJob: { lastRunAt?: string; asOf?: string };
+  identityChecks: IdentityCheck[];
+  wealthCases: WealthCase[];
 }
 
 export type ClientInput = Omit<Client, 'id' | 'agentId' | 'verification' | 'createdAt'>;
 export type UserInput = Pick<User, 'firstName' | 'lastName' | 'email' | 'role'>;
-export type AccountInput = Omit<Account, 'id' | 'clientId'>;
+// New accounts always open as Pending; activation follows the verification checks.
+export type AccountInput = Omit<Account, 'id' | 'clientId' | 'status'>;

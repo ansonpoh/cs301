@@ -3,6 +3,7 @@ import { DemoService, STORAGE_KEY } from './service';
 import { validateClient } from './validation';
 import { auditColumns, maskValue } from './audit';
 import type { ClientInput } from './types';
+import { EVIDENCE_REQUIREMENTS } from './verification';
 
 let data: Record<string, string>, service: DemoService;
 const storage = {
@@ -90,7 +91,7 @@ describe('service rules and persistence', () => {
     await finish(service.login('USR-003'));
     await expect(service.viewClient('CL-1009')).rejects.toThrow('unavailable');
     await expect(service.saveClient(valid, 'CL-1009')).rejects.toThrow('unavailable');
-    await expect(service.verify('CL-1009', 'Verified')).rejects.toThrow('unavailable');
+    await expect(service.requestIdentityVerification('CL-1009')).rejects.toThrow('unavailable');
     await expect(
       service.deleteAccount(service.snapshot().accounts.find((a) => a.clientId === 'CL-1009')!.id),
     ).rejects.toThrow('unavailable');
@@ -109,11 +110,11 @@ describe('service rules and persistence', () => {
   it('executes onboarding, verification, account creation and import with audit events', async () => {
     await finish(service.login('USR-003'));
     const id = await finish(service.saveClient(valid));
-    await finish(service.verify(id, 'Verified'));
+    const check = await finish(service.requestIdentityVerification(id));
+    await finish(service.simulateIdentityUpload(check, 'match'));
     await finish(
       service.createAccount(id, {
         type: 'Savings',
-        status: 'Active',
         openingDate: '2026-09-30',
         initialDeposit: 500,
         currency: 'SGD',
@@ -328,6 +329,8 @@ describe('complaints and disputes', () => {
         description: 'Client unhappy with call centre wait times.',
       }),
     );
+    // CL-1003's seeded pending account must go before the profile can be erased.
+    await finish(service.deleteAccount('AC-80010'));
     await finish(service.deleteClient('CL-1003'));
     const c = service.snapshot().cases.find((c) => c.clientId === 'CL-1003')!;
     expect(c.description).toContain('Erased');
@@ -409,7 +412,8 @@ describe('product recommendations', () => {
       .accounts.find(
         (a) => a.id === current('CL-1001').items.find((r) => r.id === hys.id)!.outcome!.accountId,
       );
-    expect(acc).toMatchObject({ type: 'Savings', status: 'Pending', clientId: 'CL-1001' });
+    // CL-1001 is verified and below the wealth-review threshold, so the account activates at once.
+    expect(acc).toMatchObject({ type: 'Savings', status: 'Active', clientId: 'CL-1001' });
     await expect(service.recordOutcome(hys.id, { type: 'Rejected', reason: 'x' })).rejects.toThrow(
       'already',
     );
@@ -458,6 +462,8 @@ describe('product recommendations', () => {
     expect(
       (await finish(service.getNextBestActions())).actions.some((a) => a.clientId === 'CL-1003'),
     ).toBe(false);
+    // CL-1003's seeded pending account must go before the profile can be erased.
+    await finish(service.deleteAccount('AC-80010'));
     await finish(service.deleteClient('CL-1003'));
     expect(service.snapshot().recoSets.some((s) => s.clientId === 'CL-1003')).toBe(false);
     expect(service.snapshot().recoOptOuts).not.toContain('CL-1003');
@@ -598,5 +604,250 @@ describe('attrition risk and retention', () => {
     const db = service.snapshot();
     expect(db.riskProfiles.some((p) => p.clientId === 'CL-1012')).toBe(false);
     expect(db.interventions.some((i) => i.clientId === 'CL-1012')).toBe(false);
+  });
+});
+
+describe('feature 2: identity verification, wealth verification and account activation', () => {
+  const asset = {
+    type: 'Stocks / funds' as const,
+    description: 'Brokerage portfolio',
+    ownershipPct: 100,
+    declaredValue: 300_000,
+    valuationDate: '2026-01-15',
+    origin: 'Employment income' as const,
+  };
+  const wealth = {
+    assets: [asset],
+    liabilities: 20_000,
+    sourceNarrative: 'Salary savings invested monthly over ten years.',
+  };
+  const verifyIdentity = async (clientId: string) => {
+    const checkId = await finish(service.requestIdentityVerification(clientId));
+    await finish(service.simulateIdentityUpload(checkId, 'match'));
+    return checkId;
+  };
+  const uploadAll = async (caseId: string, scenario: 'consistent' | 'inconsistent') => {
+    const wc = service.snapshot().wealthCases.find((w) => w.id === caseId)!;
+    for (const a of wc.assets)
+      for (const r of EVIDENCE_REQUIREMENTS[a.type])
+        await finish(service.uploadWealthEvidence(caseId, a.id, r.docType, scenario));
+  };
+
+  it('opens new accounts as Pending and activates them once identity is verified', async () => {
+    await finish(service.login('USR-003'));
+    const id = await finish(service.saveClient(valid));
+    await finish(
+      service.createAccount(id, {
+        type: 'Savings',
+        openingDate: '2026-09-30',
+        initialDeposit: 500,
+        currency: 'SGD',
+        branchId: 'SG-001',
+      }),
+    );
+    const account = () => service.snapshot().accounts.find((a) => a.clientId === id)!;
+    expect(account().status).toBe('Pending');
+
+    const first = await finish(service.requestIdentityVerification(id));
+    await expect(service.requestIdentityVerification(id)).rejects.toThrow('in progress');
+    await finish(service.simulateIdentityUpload(first, 'mismatch'));
+    let db = service.snapshot();
+    expect(db.clients.find((c) => c.id === id)!.verification).toBe('Failed');
+    expect(db.identityChecks[0].mismatches!.length).toBeGreaterThan(0);
+    expect(account().status).toBe('Pending');
+    await expect(service.simulateIdentityUpload(first, 'match')).rejects.toThrow('no longer');
+
+    await verifyIdentity(id);
+    db = service.snapshot();
+    expect(db.clients.find((c) => c.id === id)!.verification).toBe('Verified');
+    expect(db.identityChecks[0].extracted!.nric).toMatch(/^S\*+/);
+    expect(account().status).toBe('Active');
+    const actions = db.audit.map((a) => a.action);
+    for (const a of [
+      'IDENTITY_VERIFICATION_REQUESTED',
+      'IDENTITY_EVIDENCE_UPLOADED',
+      'IDENTITY_STATUS_UPDATED',
+      'Account activated',
+    ])
+      expect(actions).toContain(a);
+    // The upload is attributed to the client's scoped grant and the comparison to the system.
+    expect(db.audit.find((a) => a.action === 'IDENTITY_STATUS_UPDATED')!.actorId).toBe('SYSTEM');
+    expect(db.audit.find((a) => a.action === 'IDENTITY_EVIDENCE_UPLOADED')!.actorId).toBe(
+      `CLIENT:${id}`,
+    );
+    await expect(service.requestIdentityVerification(id)).rejects.toThrow('already verified');
+  });
+
+  it('routes uncertain extraction to manual review that only an admin can resolve', async () => {
+    await finish(service.login('USR-003'));
+    // CL-1006 is seeded in manual review.
+    await expect(
+      service.resolveIdentityReview('IDV-1001', 'Verified', 'Checked the original NRIC'),
+    ).rejects.toThrow('Administrator');
+    await finish(service.login('USR-001'));
+    await expect(service.resolveIdentityReview('IDV-1001', 'Verified', 'ok')).rejects.toThrow(
+      'rationale',
+    );
+    await finish(
+      service.resolveIdentityReview('IDV-1001', 'Verified', 'Matched the original NRIC in branch'),
+    );
+    const db = service.snapshot();
+    expect(db.clients.find((c) => c.id === 'CL-1006')!.verification).toBe('Verified');
+    expect(db.identityChecks.find((x) => x.id === 'IDV-1001')!.review).toMatchObject({
+      reviewerId: 'USR-001',
+      outcome: 'Verified',
+    });
+    // The rationale stays in the check record, out of the audit log.
+    expect(JSON.stringify(db.audit)).not.toContain('original NRIC in branch');
+
+    await finish(service.login('USR-003'));
+    const id = await finish(service.requestIdentityVerification('CL-1003'));
+    await finish(service.simulateIdentityUpload(id, 'service-down'));
+    expect(service.snapshot().clients.find((c) => c.id === 'CL-1003')!.verification).toBe(
+      'Manual Review',
+    );
+  });
+
+  it('expires the client upload link', async () => {
+    await finish(service.login('USR-003'));
+    const id = await finish(service.requestIdentityVerification('CL-1003'));
+    vi.setSystemTime(Date.now() + 8 * 86_400_000);
+    await expect(service.simulateIdentityUpload(id, 'match')).rejects.toThrow('expired');
+  });
+
+  it('keeps a high-value account pending until the wealth case is verified', async () => {
+    await finish(service.login('USR-003'));
+    // CL-1003 holds a S$250,000 pending account, so wealth review is required.
+    await verifyIdentity('CL-1003');
+    const account = () => service.snapshot().accounts.find((a) => a.id === 'AC-80010')!;
+    expect(account().status).toBe('Pending');
+
+    await expect(
+      service.createWealthCase('CL-1003', { ...wealth, assets: [asset, asset] }),
+    ).rejects.toThrow('declared twice');
+    await expect(
+      service.createWealthCase('CL-1003', {
+        ...wealth,
+        assets: [{ ...asset, valuationDate: '2999-01-01' }],
+      }),
+    ).rejects.toThrow('future');
+    await expect(
+      service.createWealthCase('CL-1003', { ...wealth, sourceNarrative: 'Savings' }),
+    ).rejects.toThrow('20–1000');
+    const caseId = await finish(service.createWealthCase('CL-1003', wealth));
+    await expect(service.createWealthCase('CL-1003', wealth)).rejects.toThrow('in progress');
+    await expect(service.submitWealthCase(caseId)).rejects.toThrow('missing');
+
+    const assetId = service.snapshot().wealthCases[0].assets[0].id;
+    const bad = await finish(
+      service.uploadWealthEvidence(caseId, assetId, 'Acquisition records', 'unsupported'),
+    );
+    expect(bad.status).toBe('Rejected');
+    await expect(
+      service.uploadWealthEvidence(caseId, assetId, 'Ownership record', 'consistent'),
+    ).rejects.toThrow('not required');
+    await uploadAll(caseId, 'inconsistent');
+    await finish(service.submitWealthCase(caseId));
+    let wc = service.snapshot().wealthCases.find((w) => w.id === caseId)!;
+    expect(wc.status).toBe('Under Review');
+    expect(wc.analysis!.exceptions.length).toBeGreaterThan(0);
+    expect(wc.analysis!.claims[0]).toMatchObject({
+      ownership: 'Exception',
+      valuation: 'Exception',
+    });
+    await expect(
+      service.uploadWealthEvidence(caseId, assetId, 'Acquisition records', 'consistent'),
+    ).rejects.toThrow('Under Review');
+    await expect(service.decideWealthCase(caseId, 'Verified', 'Looks fine to me')).rejects.toThrow(
+      'Administrator',
+    );
+
+    await finish(service.login('USR-001'));
+    await expect(
+      service.decideWealthCase(caseId, 'More Information Required', 'Figures differ'),
+    ).rejects.toThrow('information needed');
+    await finish(
+      service.decideWealthCase(
+        caseId,
+        'More Information Required',
+        'Statement value and owner differ from the declaration',
+        'Upload the latest custodian statement in the client’s name',
+      ),
+    );
+    expect(account().status).toBe('Pending');
+
+    await finish(service.login('USR-003'));
+    await uploadAll(caseId, 'consistent');
+    await finish(service.submitWealthCase(caseId));
+    wc = service.snapshot().wealthCases.find((w) => w.id === caseId)!;
+    expect(wc.analysis!.exceptions).toEqual([]);
+    expect(wc.analysis!.claims[0].corroboratedValue).toBe(294_000);
+
+    await finish(service.login('USR-001'));
+    await finish(service.decideWealthCase(caseId, 'Verified', 'Custodian statement corroborates'));
+    expect(account().status).toBe('Active');
+
+    const db = service.snapshot();
+    const actions = db.audit.map((a) => a.action);
+    for (const a of [
+      'WEALTH_CASE_CREATED',
+      'WEALTH_EVIDENCE_UPLOADED',
+      'WEALTH_CASE_SUBMITTED',
+      'WEALTH_ANALYSIS_COMPLETED',
+      'WEALTH_DECISION_RECORDED',
+    ])
+      expect(actions).toContain(a);
+    expect(db.audit.find((a) => a.action === 'WEALTH_ANALYSIS_COMPLETED')!.actorId).toBe('SYSTEM');
+    // Declarations, values and review notes are kept out of the audit log.
+    const log = JSON.stringify(db.audit);
+    expect(log).not.toContain('Salary savings');
+    expect(log).not.toContain('300000');
+    expect(log).not.toContain('Custodian statement corroborates');
+  });
+
+  it('flags stale valuations and versions re-verification after a final decision', async () => {
+    await finish(service.login('USR-001'));
+    const seeded = service.snapshot().wealthCases.find((w) => w.id === 'WC-1001')!;
+    expect(seeded.analysis!.exceptions.some((e) => e.includes('older than'))).toBe(true);
+    await finish(service.decideWealthCase('WC-1001', 'Rejected', 'Property valuation is stale'));
+    await finish(service.login('USR-003'));
+    const v2 = await finish(service.createWealthCase('CL-1002', wealth));
+    const db = service.snapshot();
+    expect(db.wealthCases.find((w) => w.id === v2)!.version).toBe(2);
+    expect(db.audit.map((a) => a.action)).toContain('WEALTH_REVERIFICATION_REQUESTED');
+  });
+
+  it('scopes verification work to assigned clients and logs each queue search once', async () => {
+    await finish(service.login('USR-004'));
+    await expect(service.viewWealthProfile('CL-1002')).rejects.toThrow('unavailable');
+    await expect(service.requestIdentityVerification('CL-1003')).rejects.toThrow('unavailable');
+    expect(await finish(service.searchWealthCases())).toHaveLength(0);
+    await finish(service.login('USR-001'));
+    await expect(service.createWealthCase('CL-1002', wealth)).rejects.toThrow('agent workflow');
+    const before = service.snapshot().audit.length;
+    const rows = await finish(service.searchWealthCases({ status: 'Under Review' }));
+    expect(rows.map((w) => w.id)).toEqual(['WC-1001']);
+    const db = service.snapshot();
+    expect(db.audit).toHaveLength(before + 1);
+    expect(db.audit[0]).toMatchObject({ action: 'WEALTH_CASE_VIEWED', crud: 'Read' });
+    expect(db.audit[0].detail).toContain('1 result(s)');
+  });
+
+  it('erases identity and wealth records with the client', async () => {
+    await finish(service.login('USR-003'));
+    await finish(service.deleteClient('CL-1006'));
+    expect(service.snapshot().identityChecks.some((x) => x.clientId === 'CL-1006')).toBe(false);
+  });
+
+  it('migrates saved data from before feature 2', async () => {
+    const old = service.snapshot() as unknown as Record<string, unknown>;
+    delete old.identityChecks;
+    delete old.wealthCases;
+    (old.clients as { verification: string }[])[0].verification = 'Rejected';
+    data[STORAGE_KEY] = JSON.stringify(old);
+    const migrated = new DemoService(storage).snapshot();
+    expect(migrated.clients[0].verification).toBe('Failed');
+    expect(migrated.identityChecks).toEqual([]);
+    expect(migrated.wealthCases).toEqual([]);
   });
 });

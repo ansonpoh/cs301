@@ -6,6 +6,7 @@ import {
   LogOut,
   HeartHandshake,
   MessageSquareWarning,
+  ShieldCheck,
   ScrollText,
   UserCog,
   Users,
@@ -22,6 +23,7 @@ export default function Sidebar({
   clientCount,
   caseCount,
   riskCount,
+  verifyCount,
   open,
   onNavigate,
   onClose,
@@ -34,6 +36,7 @@ export default function Sidebar({
   clientCount: number;
   caseCount: number;
   riskCount: number;
+  verifyCount: number;
   open: boolean;
   onNavigate: (page: string) => void;
   onClose: () => void;
@@ -43,6 +46,7 @@ export default function Sidebar({
   const links = [
     { label: 'Overview', icon: LayoutDashboard },
     { label: 'Clients', icon: Users },
+    { label: 'Verification', icon: ShieldCheck },
     { label: 'Transactions', icon: ArrowLeftRight },
     { label: 'Cases', icon: MessageSquareWarning },
     { label: 'Retention', icon: HeartHandshake },
@@ -76,6 +80,16 @@ export default function Sidebar({
               {l.label === 'Cases' && caseCount > 0 && (
                 <span className="nav-alert" title="Escalated cases">
                   {caseCount}
+                </span>
+              )}
+              {l.label === 'Verification' && verifyCount > 0 && (
+                <span
+                  className="nav-alert"
+                  title={
+                    admin ? 'Verification reviews waiting' : 'Verification work waiting on you'
+                  }
+                >
+                  {verifyCount}
                 </span>
               )}
               {l.label === 'Retention' && riskCount > 0 && (

@@ -76,7 +76,7 @@ export function ClientList({
         </span>
         <span>
           <i className="dot amber" />
-          <strong>{clients.filter((c) => c.verification === 'Pending').length}</strong> awaiting
+          <strong>{clients.filter((c) => c.verification !== 'Verified').length}</strong> awaiting
           verification
         </span>
       </div>
@@ -88,7 +88,7 @@ export function ClientList({
             value={status}
             onChange={(e) => setStatus(e.target.value)}
           >
-            {['All statuses', 'Verified', 'Pending', 'Rejected'].map((x) => (
+            {['All statuses', 'Verified', 'Pending', 'Manual Review', 'Failed'].map((x) => (
               <option key={x}>{x}</option>
             ))}
           </select>
@@ -186,7 +186,8 @@ export function ClientDetail({
   canEdit,
   onBack,
   onEdit,
-  onVerify,
+  onVerificationTab,
+  verification,
   onDelete,
   onAccount,
   onDeleteAccount,
@@ -209,7 +210,8 @@ export function ClientDetail({
   canEdit: boolean;
   onBack: () => void;
   onEdit: () => void;
-  onVerify: () => void;
+  onVerificationTab: () => void;
+  verification: ReactNode;
   onDelete: () => void;
   onAccount: () => void;
   onDeleteAccount: (id: string) => void;
@@ -226,8 +228,18 @@ export function ClientDetail({
   riskFlag?: ReactNode;
 }) {
   const [tab, setTab] = useState(initialTab);
-  const tabs = ['Overview', 'Accounts', 'Transactions', 'Cases'];
-  if (recommendations) tabs.splice(1, 0, 'Recommendations');
+  const tabs = ['Overview', 'Verification', 'Accounts', 'Transactions', 'Cases'];
+  if (recommendations) tabs.splice(2, 0, 'Recommendations');
+  const showTab = (t: string) => {
+    setTab(t);
+    // Loading the client's cases is a search, so it is logged as CASE_VIEWED.
+    if (t === 'Cases' && tab !== 'Cases') onCasesTab();
+    // Opening recommendations checks the cache, regenerates if stale, and logs the view.
+    if (t === 'Recommendations' && tab !== t) onRecoTab();
+    // Opening verification is logged once as WEALTH_PROFILE_VIEWED.
+    if (t === 'Verification' && tab !== t) onVerificationTab();
+  };
+  const pendingAccounts = accounts.filter((a) => a.status === 'Pending').length;
 
   return (
     <>
@@ -267,17 +279,7 @@ export function ClientDetail({
       </div>
       <div className="tabs">
         {tabs.map((t) => (
-          <button
-            key={t}
-            className={tab === t ? 'active' : ''}
-            onClick={() => {
-              setTab(t);
-              // Loading the client's cases is a search, so it is logged as CASE_VIEWED.
-              if (t === 'Cases' && tab !== 'Cases') onCasesTab();
-              // Opening recommendations checks the cache, regenerates if stale, and logs the view.
-              if (t === 'Recommendations' && tab !== t) onRecoTab();
-            }}
-          >
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => showTab(t)}>
             {t}
             {t === 'Accounts' && <span>{accounts.length}</span>}
             {t === 'Cases' && <span>{caseCount}</span>}
@@ -317,16 +319,20 @@ export function ClientDetail({
               <h2>Identity verification</h2>
               <p>
                 {c.verification === 'Verified'
-                  ? 'This client’s identity has been verified in the demo.'
-                  : 'Complete an identity check to keep the client profile up to date.'}
+                  ? 'Identity confirmed from the client’s NRIC upload.'
+                  : c.verification === 'Manual Review'
+                    ? 'Extraction could not decide. An authorized reviewer will resolve it.'
+                    : c.verification === 'Failed'
+                      ? 'The uploaded NRIC did not match the profile. Request a new check.'
+                      : 'Request an NRIC upload to verify this client’s identity.'}
+                {pendingAccounts > 0 &&
+                  ` ${pendingAccounts} pending ${pendingAccounts === 1 ? 'account activates' : 'accounts activate'} once every required check passes.`}
               </p>
               <Badge>{c.verification}</Badge>
-              {canEdit && (
-                <button className="primary" onClick={onVerify}>
-                  {c.verification === 'Verified' ? 'Review verification' : 'Verify identity'}
-                  <ArrowUpRight size={16} />
-                </button>
-              )}
+              <button className="primary" onClick={() => showTab('Verification')}>
+                Open verification
+                <ArrowUpRight size={16} />
+              </button>
             </section>
             <section className="panel contact-card relationship-card">
               <h3>Relationship</h3>
@@ -400,6 +406,8 @@ export function ClientDetail({
             <Empty title="No accounts yet" text="Open the first bank account for this client." />
           )}
         </section>
+      ) : tab === 'Verification' ? (
+        verification
       ) : tab === 'Recommendations' ? (
         recommendations
       ) : tab === 'Cases' ? (

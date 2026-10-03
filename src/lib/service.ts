@@ -27,7 +27,29 @@ import {
   analysisDate,
   isOpenRisk,
 } from './retention';
+import {
+  ASSET_TYPES,
+  EVIDENCE_REQUIREMENTS,
+  UPLOAD_LINK_DAYS,
+  WEALTH_ORIGINS,
+  activationBlockers,
+  analyseWealth,
+  extractIdentity,
+  fullName,
+  isEditableWealth,
+  isFinalWealth,
+  localDate,
+  missingEvidence,
+  scanEvidence,
+} from './verification';
 import type {
+  EvidenceScenario,
+  IdentityCheck,
+  IdentityScenario,
+  WealthCase,
+  WealthFilters,
+  WealthInput,
+  WealthStatus,
   AiMode,
   InterventionInput,
   RiskFilters,
@@ -88,6 +110,10 @@ export class DemoService {
           value.interventions = seed.interventions.filter((i) => has('clients', i.clientId));
         }
         value.riskJob ??= {};
+        // Feature 2 verification records; the old "Rejected" identity status is now "Failed".
+        value.identityChecks ??= [];
+        value.wealthCases ??= [];
+        for (const c of value.clients) if (c.verification === 'Rejected') c.verification = 'Failed';
       }
       this.db =
         value?.version === 1 &&
@@ -105,6 +131,8 @@ export class DemoService {
           'recoOptOuts',
           'riskProfiles',
           'interventions',
+          'identityChecks',
+          'wealthCases',
         ].every((k) => Array.isArray(value[k]))
           ? value
           : createSeed();
@@ -222,14 +250,399 @@ export class DemoService {
     this.log('Client viewed', id, id);
     return this.commit();
   }
-  async verify(id: string, outcome: 'Verified' | 'Rejected') {
-    const c = this.client(id, true);
-    const before = c.verification;
-    c.verification = outcome;
-    this.log('Identity verification simulated', id, id, [
-      { field: 'verification', before, after: outcome },
-    ]);
+  // Activates the client's pending accounts once identity and every policy-required check pass.
+  private evaluateActivation(clientId: string) {
+    const client = this.db.clients.find((c) => c.id === clientId);
+    if (!client) return;
+    const accounts = this.db.accounts.filter((a) => a.clientId === clientId);
+    const blockers = activationBlockers(
+      client,
+      accounts,
+      this.db.wealthCases.filter((w) => w.clientId === clientId),
+    );
+    if (blockers.length) return;
+    for (const a of accounts.filter((a) => a.status === 'Pending')) {
+      a.status = 'Active';
+      this.log(
+        'Account activated',
+        a.id,
+        clientId,
+        [{ field: 'accountStatus', before: 'Pending', after: 'Active' }],
+        'All required verification checks passed.',
+      );
+    }
+  }
+  private identityCheck(id: string) {
+    const check = this.db.identityChecks.find((x) => x.id === id);
+    if (!check) throw new Error('Identity check unavailable.');
+    return { check, client: this.client(check.clientId) };
+  }
+  // Automated outcomes are logged as SYSTEM; a reviewer's decision is logged as the reviewer.
+  private setIdentity(
+    check: IdentityCheck,
+    to: IdentityCheck['status'],
+    detail: string,
+    actorId = 'SYSTEM',
+  ) {
+    const client = this.db.clients.find((c) => c.id === check.clientId)!;
+    const before = client.verification;
+    check.status = to;
+    client.verification = to === 'Awaiting Upload' ? before : to;
+    this.log(
+      'IDENTITY_STATUS_UPDATED',
+      check.id,
+      client.id,
+      [{ field: 'verification', before, after: client.verification }],
+      detail,
+      actorId,
+    );
+    if (to === 'Verified') this.evaluateActivation(client.id);
+  }
+  // Creates a client-bound session and emails the client a short-lived NRIC upload link (simulated).
+  async requestIdentityVerification(clientId: string) {
+    const actor = this.actor();
+    const client = this.client(clientId, true);
+    if (client.verification === 'Verified') throw new Error('This identity is already verified.');
+    if (
+      this.db.identityChecks.some(
+        (x) =>
+          x.clientId === clientId &&
+          (x.status === 'Awaiting Upload' || x.status === 'Manual Review'),
+      )
+    )
+      throw new Error('An identity check is already in progress for this client.');
+    const id = `IDV-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    this.db.identityChecks.unshift({
+      id,
+      clientId,
+      requestedBy: actor.id,
+      requestedAt: new Date().toISOString(),
+      status: 'Awaiting Upload',
+    });
+    this.log(
+      'IDENTITY_VERIFICATION_REQUESTED',
+      id,
+      clientId,
+      undefined,
+      `Upload link emailed to the client (simulated SES), valid for ${UPLOAD_LINK_DAYS} days.`,
+    );
+    await this.commit();
+    return id;
+  }
+  // Stands in for the client's upload, the scan and Textract extraction, and the profile comparison.
+  async simulateIdentityUpload(checkId: string, scenario: IdentityScenario) {
+    const { check, client } = this.identityCheck(checkId);
+    this.client(client.id, true);
+    if (check.status !== 'Awaiting Upload')
+      throw new Error('This check is no longer waiting for an upload.');
+    if (Date.now() - Date.parse(check.requestedAt) > UPLOAD_LINK_DAYS * 86_400_000)
+      throw new Error('The upload link has expired. Request a new verification.');
+    check.uploadedAt = new Date().toISOString();
+    check.evidenceId = `EVD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    // Uploads come from the client through the scoped grant, not from a staff account.
+    this.log(
+      'IDENTITY_EVIDENCE_UPLOADED',
+      check.id,
+      client.id,
+      undefined,
+      `Evidence ${check.evidenceId} · NRIC image · accepted into quarantine and scanned`,
+      `CLIENT:${client.id}`,
+    );
+    const r = extractIdentity(client, scenario);
+    if ('reason' in r) {
+      check.reason = r.reason;
+      this.setIdentity(check, 'Manual Review', `Routed to manual review: ${r.reason}`);
+    } else {
+      check.extracted = r.extracted;
+      check.mismatches = r.mismatches;
+      if (r.mismatches.length)
+        this.setIdentity(check, 'Failed', `Extracted fields mismatch: ${r.mismatches.join('; ')}`);
+      else
+        this.setIdentity(check, 'Verified', 'Extracted name and date of birth match the profile');
+    }
     return this.commit();
+  }
+  async resolveIdentityReview(checkId: string, outcome: 'Verified' | 'Failed', rationale: string) {
+    const admin = this.admin();
+    const { check } = this.identityCheck(checkId);
+    if (check.status !== 'Manual Review') throw new Error('This check is not awaiting review.');
+    if (outcome !== 'Verified' && outcome !== 'Failed') throw new Error('Select an outcome.');
+    const text = rationale.trim();
+    if (text.length < 10 || text.length > 500)
+      throw new Error('Record a rationale of 10–500 characters.');
+    check.review = { reviewerId: admin.id, at: new Date().toISOString(), outcome, rationale: text };
+    // The rationale stays in the check record; the log carries the decision only.
+    this.setIdentity(
+      check,
+      outcome,
+      `Reviewer decision recorded · evidence ${check.evidenceId}`,
+      admin.id,
+    );
+    return this.commit();
+  }
+  private wealthCase(id: string) {
+    const wc = this.db.wealthCases.find((w) => w.id === id);
+    if (!wc) throw new Error('Wealth case unavailable.');
+    this.client(wc.clientId);
+    return wc;
+  }
+  private agentWealthCase(id: string) {
+    const actor = this.actor();
+    if (actor.role !== 'Agent') throw new Error('Wealth declarations are an agent workflow.');
+    const wc = this.wealthCase(id);
+    return { actor, wc, client: this.client(wc.clientId, true) };
+  }
+  private wealthStatus(wc: WealthCase, to: WealthStatus, actorId?: string) {
+    const from = wc.status;
+    wc.status = to;
+    wc.updatedAt = new Date().toISOString();
+    return { from, to, actorId, at: wc.updatedAt };
+  }
+  private validateWealth(input: WealthInput) {
+    if (!input.assets.length || input.assets.length > 10)
+      throw new Error('Declare between 1 and 10 assets.');
+    const today = localDate();
+    const seen = new Set<string>();
+    const assets = input.assets.map((a) => {
+      const description = a.description.trim();
+      if (!ASSET_TYPES.includes(a.type)) throw new Error('Select an asset type.');
+      if (description.length < 3 || description.length > 100)
+        throw new Error('Describe each asset in 3–100 characters.');
+      const key = `${a.type}|${description.toLowerCase()}`;
+      if (seen.has(key)) throw new Error(`"${description}" is declared twice.`);
+      seen.add(key);
+      if (!Number.isFinite(a.ownershipPct) || a.ownershipPct <= 0 || a.ownershipPct > 100)
+        throw new Error('Ownership share must be above 0% and at most 100%.');
+      if (!Number.isFinite(a.declaredValue) || a.declaredValue <= 0 || a.declaredValue > 1e10)
+        throw new Error('Enter a positive declared value for each asset.');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(a.valuationDate) || a.valuationDate > today)
+        throw new Error('Valuation dates cannot be in the future.');
+      if (!WEALTH_ORIGINS.includes(a.origin))
+        throw new Error('Select how each asset was acquired.');
+      return {
+        ...a,
+        description,
+        id: a.id || `AST-${crypto.randomUUID().slice(0, 6).toUpperCase()}`,
+      };
+    });
+    if (!Number.isFinite(input.liabilities) || input.liabilities < 0)
+      throw new Error('Liabilities cannot be negative.');
+    const sourceNarrative = input.sourceNarrative.trim();
+    if (sourceNarrative.length < 20 || sourceNarrative.length > 1000)
+      throw new Error('Explain how the wealth was built up in 20–1000 characters.');
+    return { assets, liabilities: input.liabilities, sourceNarrative };
+  }
+  // Logs carry categories and counts only; the declaration itself stays in the case record.
+  private assetSummary(wc: WealthCase) {
+    return `${wc.assets.length} asset(s): ${[...new Set(wc.assets.map((a) => a.type))].join(', ')}`;
+  }
+  async createWealthCase(clientId: string, input: WealthInput) {
+    const actor = this.actor();
+    if (actor.role !== 'Agent') throw new Error('Wealth declarations are an agent workflow.');
+    this.client(clientId, true);
+    const previous = this.db.wealthCases.filter((w) => w.clientId === clientId);
+    if (previous.some((w) => !isFinalWealth(w.status)))
+      throw new Error('This client already has a wealth case in progress.');
+    const value = this.validateWealth(input);
+    const at = new Date().toISOString();
+    const id = `WC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const wc: WealthCase = {
+      id,
+      clientId,
+      agentId: actor.id,
+      version: previous.length + 1,
+      status: 'Pending Evidence',
+      createdAt: at,
+      updatedAt: at,
+      ...value,
+      evidence: [],
+      history: [{ type: 'WEALTH_CASE_CREATED', at, actorId: actor.id, to: 'Pending Evidence' }],
+    };
+    this.db.wealthCases.unshift(wc);
+    if (previous.length)
+      this.log(
+        'WEALTH_REVERIFICATION_REQUESTED',
+        id,
+        clientId,
+        undefined,
+        `Previous case ${previous[0].id} (v${previous[0].version}, ${previous[0].status}) → ${id} (v${wc.version})`,
+      );
+    this.log(
+      'WEALTH_CASE_CREATED',
+      id,
+      clientId,
+      undefined,
+      `v${wc.version} · ${this.assetSummary(wc)}`,
+    );
+    await this.commit();
+    return id;
+  }
+  async updateWealthDeclaration(caseId: string, input: WealthInput) {
+    const { actor, wc } = this.agentWealthCase(caseId);
+    if (!isEditableWealth(wc.status))
+      throw new Error(`A case that is ${wc.status} cannot be edited.`);
+    Object.assign(wc, this.validateWealth(input), { updatedAt: new Date().toISOString() });
+    wc.history.push({ type: 'WEALTH_DECLARATION_UPDATED', at: wc.updatedAt, actorId: actor.id });
+    this.log('WEALTH_DECLARATION_UPDATED', wc.id, wc.clientId, undefined, this.assetSummary(wc));
+    return this.commit();
+  }
+  // Stands in for the presigned upload to private S3 quarantine, the malware scan and acceptance.
+  async uploadWealthEvidence(
+    caseId: string,
+    assetId: string,
+    docType: string,
+    scenario: EvidenceScenario,
+  ) {
+    const { actor, wc, client } = this.agentWealthCase(caseId);
+    if (!isEditableWealth(wc.status))
+      throw new Error(`Evidence cannot be added while the case is ${wc.status}.`);
+    const asset = wc.assets.find((a) => a.id === assetId);
+    if (!asset) throw new Error('Select a declared asset.');
+    const req = EVIDENCE_REQUIREMENTS[asset.type].find((r) => r.docType === docType);
+    if (!req) throw new Error(`${docType} is not required for ${asset.type.toLowerCase()}.`);
+    const at = new Date().toISOString();
+    const evidence = {
+      id: `EVD-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      assetId,
+      docType,
+      uploadedAt: at,
+      uploadedBy: actor.id,
+      ...scanEvidence(client, asset, req, scenario),
+    };
+    wc.evidence.unshift(evidence);
+    wc.updatedAt = at;
+    wc.history.push({
+      type: 'WEALTH_EVIDENCE_UPLOADED',
+      at,
+      actorId: actor.id,
+      note: `${docType} · ${evidence.status}`,
+    });
+    this.log(
+      'WEALTH_EVIDENCE_UPLOADED',
+      evidence.id,
+      wc.clientId,
+      undefined,
+      `Case ${wc.id} · ${docType} · claim ${assetId} · ${evidence.status}${evidence.reason ? ` (${evidence.reason})` : ''}`,
+    );
+    await this.commit();
+    return structuredClone(evidence);
+  }
+  // Submission checks the checklist, then runs the analysis job (synchronously in the demo).
+  async submitWealthCase(caseId: string) {
+    const { actor, wc, client } = this.agentWealthCase(caseId);
+    if (!isEditableWealth(wc.status))
+      throw new Error(`A case that is ${wc.status} cannot be submitted.`);
+    const missing = missingEvidence(wc);
+    if (missing.length)
+      throw new Error(
+        `${missing.length} required document(s) missing, e.g. ${missing.slice(0, 2).join('; ')}.`,
+      );
+    const change = this.wealthStatus(wc, 'Under Review', actor.id);
+    wc.history.push({ type: 'WEALTH_CASE_SUBMITTED', ...change });
+    this.log(
+      'WEALTH_CASE_SUBMITTED',
+      wc.id,
+      wc.clientId,
+      [{ field: 'wealthStatus', before: change.from, after: change.to }],
+      `v${wc.version} · ${wc.evidence.filter((e) => e.status === 'Accepted').length} accepted document(s)`,
+    );
+    const jobId = `JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const result = analyseWealth(client, wc);
+    wc.analysis = {
+      at: new Date().toISOString(),
+      jobId,
+      exceptions: result.exceptions,
+      claims: result.claims,
+    };
+    wc.history.push({
+      type: 'WEALTH_ANALYSIS_COMPLETED',
+      at: wc.analysis.at,
+      note: `${result.exceptions.length} exception(s)`,
+    });
+    this.log(
+      'WEALTH_ANALYSIS_COMPLETED',
+      wc.id,
+      wc.clientId,
+      undefined,
+      `Job ${jobId} · v${wc.version} · ${result.checks} checks · ${result.exceptions.length} exception(s)`,
+      'SYSTEM',
+    );
+    return this.commit();
+  }
+  async decideWealthCase(
+    caseId: string,
+    outcome: 'Verified' | 'More Information Required' | 'Rejected',
+    rationale: string,
+    requestedInfo = '',
+  ) {
+    const admin = this.admin();
+    const wc = this.wealthCase(caseId);
+    if (wc.status !== 'Under Review') throw new Error('Only cases under review can be decided.');
+    if (!['Verified', 'More Information Required', 'Rejected'].includes(outcome))
+      throw new Error('Select a decision.');
+    const text = rationale.trim();
+    if (text.length < 10 || text.length > 1000)
+      throw new Error('Record a rationale of 10–1000 characters.');
+    const info = requestedInfo.trim();
+    if (outcome === 'More Information Required' && (info.length < 10 || info.length > 500))
+      throw new Error('Describe the information needed in 10–500 characters.');
+    const change = this.wealthStatus(wc, outcome, admin.id);
+    wc.decision = {
+      reviewerId: admin.id,
+      at: change.at,
+      outcome,
+      rationale: text,
+      requestedInfo: outcome === 'More Information Required' ? info : undefined,
+    };
+    wc.history.push({ type: 'WEALTH_DECISION_RECORDED', ...change });
+    // Review notes stay in the case record; the log carries the decision and open exceptions only.
+    this.log(
+      'WEALTH_DECISION_RECORDED',
+      wc.id,
+      wc.clientId,
+      [{ field: 'wealthStatus', before: change.from, after: change.to }],
+      `v${wc.version} · ${wc.analysis?.exceptions.length ?? 0} analysis exception(s) · rationale kept in the case record`,
+    );
+    if (outcome === 'Verified') this.evaluateActivation(wc.clientId);
+    return this.commit();
+  }
+  // Opening a client's verification tab is logged once as a wealth profile view.
+  async viewWealthProfile(clientId: string) {
+    this.client(clientId);
+    const cases = this.db.wealthCases.filter((w) => w.clientId === clientId);
+    this.log(
+      'WEALTH_PROFILE_VIEWED',
+      clientId,
+      clientId,
+      undefined,
+      `${cases.length} case(s) · current ${cases[0]?.status ?? 'none'}`,
+    );
+    return this.commit();
+  }
+  // Verification work queue: one WEALTH_CASE_VIEWED entry per search, with filters and count.
+  async searchWealthCases(filters: WealthFilters = {}) {
+    const u = this.actor();
+    const f = Object.fromEntries(Object.entries(filters).filter(([, v]) => v)) as WealthFilters;
+    f.status ??= 'Open';
+    const mine = (clientId: string) =>
+      u.role === 'Admin' || this.db.clients.some((c) => c.id === clientId && c.agentId === u.id);
+    const rows = this.db.wealthCases.filter(
+      (w) =>
+        mine(w.clientId) &&
+        (!f.clientId || w.clientId === f.clientId) &&
+        (f.status === 'Open' ? !isFinalWealth(w.status) : w.status === f.status),
+    );
+    this.log(
+      'WEALTH_CASE_VIEWED',
+      f.clientId ?? 'WEALTH',
+      f.clientId,
+      undefined,
+      `Filters: ${Object.entries(f)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ')} · ${rows.length} result(s)`,
+    );
+    await this.commit();
+    return structuredClone(rows);
   }
   async deleteClient(id: string) {
     this.client(id, true);
@@ -246,6 +659,9 @@ export class DemoService {
     // Risk profiles and intervention notes are deleted outright on erasure.
     this.db.riskProfiles = this.db.riskProfiles.filter((p) => p.clientId !== id);
     this.db.interventions = this.db.interventions.filter((i) => i.clientId !== id);
+    // Identity checks and wealth cases (declarations, evidence references, decisions) are deleted.
+    this.db.identityChecks = this.db.identityChecks.filter((x) => x.clientId !== id);
+    this.db.wealthCases = this.db.wealthCases.filter((w) => w.clientId !== id);
     this.db.clients = this.db.clients.filter((c) => c.id !== id);
     this.db.transactions = this.db.transactions.filter((t) => t.clientId !== id);
     this.log('Client deleted', id, id);
@@ -255,7 +671,6 @@ export class DemoService {
     this.client(clientId, true);
     if (
       !['Savings', 'Checking', 'Business'].includes(input.type) ||
-      !['Active', 'Inactive', 'Pending'].includes(input.status) ||
       input.currency !== 'SGD' ||
       !input.branchId.trim() ||
       !/^\d{4}-\d{2}-\d{2}$/.test(input.openingDate) ||
@@ -264,8 +679,10 @@ export class DemoService {
     )
       throw new Error('Complete all account fields with a non-negative initial deposit.');
     const id = `AC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-    this.db.accounts.unshift({ ...input, id, clientId });
+    // New accounts stay Pending until identity and every policy-required check pass.
+    this.db.accounts.unshift({ ...input, status: 'Pending', id, clientId });
     this.log('Account created', id, clientId);
+    this.evaluateActivation(clientId);
     return this.commit();
   }
   async deleteAccount(id: string) {
@@ -812,6 +1229,7 @@ export class DemoService {
         branchId: 'SG-001',
       });
       this.log('Account created', accountId, set.clientId, undefined, `From recommendation ${id}`);
+      this.evaluateActivation(set.clientId);
     }
     const before = item.outcome?.type ?? 'None';
     item.outcome = {
